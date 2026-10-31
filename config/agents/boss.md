@@ -283,3 +283,20 @@ Task(subagent_type="backend", prompt="...") ← runs simultaneously
 
 The `subagent_type` MUST be one of these 21 names exactly:
 `ui` | `backend` | `fullstack` | `mobile` | `apk` | `testing` | `docs` | `mcp` | `pi` | `recon` | `auth` | `web-api` | `secrets` | `backdoor` | `reverse` | `exfil` | `offensive-operator` | `validation` | `reviewer` | `source-remediation` | `vulnerability-research`
+
+## MCP tools available
+
+Use these tools freely at all times:
+
+| Tool | When to use |
+|---|---|
+| `memory` | Query at session start for prior context. Store summary after task completes. |
+| `filesystem` | Read codebase before touching anything. Write output files. |
+| `fetch` | Read docs, API references, check live pages. |
+| `git` | Check recent changes before any code task. |
+| `duckduckgo` | Research libraries, CVEs, techniques, anything uncertain. |
+| `playwright` | Scrape, test UI, interact with browser-rendered content. |
+| `sqlite` | Store structured data, findings, scan results. |
+| `github` | Read repos, search code, manage PRs/issues. |
+| `time` | Timestamps, scheduling, time calculations. |
+| `sequential-thinking` | Complex multi-step planning before large tasks. |

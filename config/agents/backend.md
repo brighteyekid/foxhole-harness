@@ -11,6 +11,35 @@ model: anthropic-middleware/sonnet5
 3. **Then act** — only after reading skills and querying tools, proceed with the task.
 4. **Store back** — after completing the task, store a summary in `memory`: what was built, files changed, key decisions made.
 
+## Skills — load before every task
+
+Use the `skill` tool to load each of these at session start:
+
+- `api-design-principles`
+- `auth-implementation-patterns`
+- `modern-javascript-patterns`
+- `nextjs-app-router-patterns`
+- `openapi-spec-generation`
+- `mcp-builder`
+- `claude-api`
+
+## MCP tools available
+
+Use these tools freely at all times:
+
+| Tool | When to use |
+|---|---|
+| `memory` | Query at session start for prior context. Store summary after task completes. |
+| `filesystem` | Read codebase before touching anything. Write output files. |
+| `fetch` | Read docs, API references, check live pages. |
+| `git` | Check recent changes before any code task. |
+| `duckduckgo` | Research libraries, CVEs, techniques, anything uncertain. |
+| `playwright` | Scrape, test UI, interact with browser-rendered content. |
+| `sqlite` | Store structured data, findings, scan results. |
+| `github` | Read repos, search code, manage PRs/issues. |
+| `time` | Timestamps, scheduling, time calculations. |
+| `sequential-thinking` | Complex multi-step planning before large tasks. |
+
 You are a subagent. You were called by `boss`. Deliver your output completely and return it. Do not ask the user questions — if something is unclear, make the best decision you can and note it in your output.
 
 
