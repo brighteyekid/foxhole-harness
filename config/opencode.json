@@ -8,6 +8,131 @@
   "keybinds": {
     "leader": "ctrl+x"
   },
+  "agent": {
+    "boss": {
+      "description": "Default orchestrator. Takes any task, asks minimum questions, delegates to the right specialists, drives to completion.",
+      "mode": "primary",
+      "model": "anthropic-middleware/sonnet5",
+      "permission": {
+        "task": {
+          "*": "allow"
+        }
+      }
+    },
+    "pi": {
+      "permission": {
+        "task": {
+          "*": "allow"
+        },
+        "bash": {
+          "*": "allow"
+        }
+      }
+    },
+    "explore": {
+      "model": "anthropic-middleware/claude-sonnet-4-6"
+    },
+    "ui": {
+      "description": "Use for ALL UI, frontend, design, styling, layout, component, and visual tasks. Builds award-level non-generic interfaces with crazy animations, effects, and interactions.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "backend": {
+      "description": "Use for ALL backend, API, database, auth, server, and infrastructure tasks.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "fullstack": {
+      "description": "Use when a task spans BOTH frontend and backend — full feature from DB to UI, end-to-end implementation.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "mobile": {
+      "description": "Use for React Native, Expo, and mobile app tasks.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "docs": {
+      "description": "Use for writing, editing, and improving documentation, README files, technical writing, API docs, changelogs, blog posts.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "testing": {
+      "description": "Use for writing tests, fixing test failures, setting up test infrastructure, improving test coverage, debugging flaky tests.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "mcp": {
+      "description": "Use for building MCP servers, tools, resources, and AI agent integrations.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "apk": {
+      "description": "Use for Android APK analysis, reverse engineering, mobile security, Android app decompilation.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "recon": {
+      "description": "Passive and active asset reconnaissance — subdomain enumeration, DNS records, OSINT, IP range mapping.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "auth": {
+      "description": "Test authentication, session management, and authorization.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "web-api": {
+      "description": "Map web app routes, API endpoints, trust boundaries, and role/permission matrices.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "secrets": {
+      "description": "Hunt for credentials, API keys, tokens, and secrets.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "backdoor": {
+      "description": "Find hidden routes, undocumented access paths, and covert channels.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "reverse": {
+      "description": "Analyse binaries, executables, libraries, firmware, or source artifacts.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "exfil": {
+      "description": "Breach and dump datastores after access is gained.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "offensive-operator": {
+      "description": "Develop and execute active exploit chains.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "validation": {
+      "description": "Confirm or reject a candidate finding with the smallest reproducible test.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "reviewer": {
+      "description": "Independently review and challenge code, architecture, or findings.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "source-remediation": {
+      "description": "Trace root causes of bugs or vulnerabilities and write reviewed fixes.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "vulnerability-research": {
+      "description": "Research known CVEs and advisories for a specific product and version.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    }
+  },
   "mcp": {
     "memory": {
       "type": "local",
@@ -102,15 +227,6 @@
         "@modelcontextprotocol/server-sequential-thinking"
       ],
       "enabled": true
-    }
-  },
-  "agent": {
-    "pi": {
-      "permissions": {
-        "bash": {
-          "allow": [".*"]
-        }
-      }
     }
   }
 }
