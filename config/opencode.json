@@ -1,0 +1,116 @@
+{
+  "model": "anthropic-middleware/sonnet5",
+  "theme": "opencode",
+  "autoshare": false,
+  "skills": {
+    "~/.agents/skills"
+  },
+  "keybinds": {
+    "leader": "ctrl+x"
+  },
+  "mcp": {
+    "memory": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "enabled": true
+    },
+    "filesystem": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/home/$USER"
+      ],
+      "enabled": true
+    },
+    "fetch": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "mcp-server-fetch"
+      ],
+      "enabled": true
+    },
+    "git": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "mcp-server-git"
+      ],
+      "enabled": true
+    },
+    "duckduckgo": {
+      "type": "local",
+      "command": [
+        "uvx",
+        "duckduckgo-mcp-server"
+      ],
+      "enabled": true
+    },
+    "playwright": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@playwright/mcp@latest",
+        "--headless"
+      ],
+      "enabled": true
+    },
+    "sqlite": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "mcp-server-sqlite",
+        "--db",
+        "/home/$USER/.config/opencode/data/opencode.db"
+      ],
+      "enabled": true
+    },
+    "github": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "enabled": true,
+      "environment": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{file:/home/$USER/.config/opencode/github.key}"
+      }
+    },
+    "time": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "time-mcp"
+      ],
+      "enabled": true
+    },
+    "sequential-thinking": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "enabled": true
+    }
+  },
+  "agent": {
+    "pi": {
+      "permissions": {
+        "bash": {
+          "allow": [".*"]
+        }
+      }
+    }
+  }
+}
