@@ -31,7 +31,7 @@ An offensive security opencode harness. Installs a fully configured boss agent +
 ## Install
 
 ```bash
-git clone https://github.com/<you>/foxhole-harness
+git clone https://github.com/brighteyekid/foxhole-harness 
 cd foxhole-harness
 chmod +x install.sh
 ./install.sh --github-token <your-github-token>
