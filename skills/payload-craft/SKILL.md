@@ -1,4 +1,5 @@
 ---
+name: payload-craft
 description: "Elite payload library: reverse shells, web shells, SQL injection, XSS, SSRF, LFI/RFI, XXE, SSTI, deserialization, file upload bypass, WAF evasion, post-exploitation payloads, C2 integration, payload obfuscation, AV/EDR evasion, cloud-specific payloads, OOB/blind testing."
 ---
 

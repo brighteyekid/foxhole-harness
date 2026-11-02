@@ -1,4 +1,5 @@
 ---
+name: chain-detection
 description: Vulnerability chain detection and exploitation methodology for authorized offensive security engagements. Contains 38+ named attack chains with prerequisites, step-by-step exploitation, curl/Python PoC commands, CVSS scores, detection bypass tips, ASCII chain diagrams, chain scoring algorithm, and a complete worked SaaS app example (JWT+GraphQL+SSRF+cloud metadata). Load when planning multi-step exploitation or looking for vulnerability chains.
 ---
 

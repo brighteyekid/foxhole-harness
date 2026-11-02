@@ -1,4 +1,5 @@
 ---
+name: waf-bypass
 description: "Elite WAF bypass methodology: detection, fingerprinting, origin IP discovery, per-vendor bypass techniques, per-vuln-class payload mutation, HTTP-level evasion, encoding chains, automated bypass workflows, custom tamper scripts, 2024-2025 cutting edge techniques."
 trigger: "WAF bypass, firewall evasion, payload obfuscation, WAF fingerprinting, origin IP discovery, tamper scripts, filter evasion, WAF detection, bypass Cloudflare, bypass AWS WAF, bypass ModSecurity, bypass Akamai, bypass Imperva, HTTP smuggling WAF, encoding bypass, SQLi WAF bypass, XSS WAF bypass"
 ---

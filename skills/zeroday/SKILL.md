@@ -1,4 +1,5 @@
 ---
+name: zeroday
 description: Zero-day and vulnerability research methodology for authorized offensive security engagements. Covers source code review per language (PHP/Python/Node/Ruby/Java/Go/.NET), prototype pollution, GraphQL attacks, WebSocket security, OAuth/OIDC attacks, JWT attacks (none/confusion/jwks/kid/jku), SAML attacks, HTTP request smuggling (CL.TE/TE.CL/TE.TE), cache poisoning, business logic flaws, race conditions, mass assignment, IDOR hunting, subdomain takeover, XXE OOB, SSTI per engine (Jinja2/Twig/Freemarker/Velocity/ERB/Mako/Smarty/Pebble), and CVE-class pattern recognition. Load when researching vulnerabilities on a target.
 ---
 

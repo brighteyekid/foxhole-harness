@@ -1,4 +1,5 @@
 ---
+name: engagement-logger
 description: "Continuous engagement logging protocol: auto-maintains continuous.md per engagement, 8 entry types, intent-before-execution protocol, state snapshots, cross-session resume. Use at the start of every engagement."
 ---
 

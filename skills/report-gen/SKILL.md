@@ -1,4 +1,5 @@
 ---
+name: report-gen
 description: "Professional pentest report generation: full engagement reports, single finding documents, executive summaries, evidence formatting, CVSS scoring, remediation tracking. Use when documenting findings or generating reports."
 ---
 
