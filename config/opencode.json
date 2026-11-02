@@ -1,12 +1,88 @@
 {
+  "$schema": "https://opencode.ai/config.json",
   "model": "anthropic-middleware/sonnet5",
-  "theme": "opencode",
-  "autoshare": false,
-  "skills": {
-    "~/.agents/skills"
+  "small_model": "anthropic-middleware/claude-sonnet-4-6",
+  "instructions": [
+    "~/.config/opencode/AGENTS.md",
+    "~/.config/opencode/instruction.md",
+    "~/.config/opencode/prompts/base.md",
+    "~/.config/opencode/prompts/behavior.md",
+    "~/.config/opencode/prompts/doctrine.md"
+  ],
+  "default_agent": "boss",
+  "autoupdate": "notify",
+  "snapshot": true,
+  "compaction": {
+    "auto": true,
+    "tail_turns": 20
   },
-  "keybinds": {
-    "leader": "ctrl+x"
+  "tool_output": {
+    "max_lines": 500,
+    "max_bytes": 51200
+  },
+  "skills": {
+    "paths": [
+      "~/.agents/skills",
+      "~/.config/opencode/skills"
+    ]
+  },
+  "provider": {
+    "anthropic-middleware": {
+      "npm": "@ai-sdk/anthropic",
+      "name": "Anthropic Middleware",
+      "options": {
+        "baseURL": "https://anthropic-middleware.parthsolankipd.workers.dev/v1"
+      },
+      "models": {
+        "claude-sonnet-4-6": {
+          "name": "Claude Sonnet 4.6",
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
+        },
+        "sonnet5": {
+          "name": "Sonnet 5",
+          "options": {
+            "baseURL": "https://anthropic-middleware.parthsolankipd.workers.dev/sonnet5"
+          },
+          "limit": {
+            "context": 200000,
+            "output": 64000
+          }
+        },
+        "grok": {
+          "name": "Grok",
+          "options": {
+            "baseURL": "https://anthropic-middleware.parthsolankipd.workers.dev/grok"
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "kimik3": {
+          "name": "Kimi K3",
+          "options": {
+            "baseURL": "https://anthropic-middleware.parthsolankipd.workers.dev/kimik3"
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "deepseekv4pro": {
+          "name": "DeepSeek V4 Pro",
+          "options": {
+            "baseURL": "https://anthropic-middleware.parthsolankipd.workers.dev/deepseekv4pro"
+          },
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        }
+      }
+    }
   },
   "agent": {
     "boss": {
@@ -19,6 +95,109 @@
         }
       }
     },
+    "ui": {
+      "description": "Use for ALL UI, frontend, design, styling, layout, component, and visual tasks. Builds award-level non-generic interfaces with crazy animations, effects, and interactions. Triggers on: UI, design, component, page, layout, style, CSS, Tailwind, React, Next.js, frontend, landing page, hero, dashboard, animation, effect, loader, transition, hover, motion, scroll, parallax, glitch, cyberpunk, neon, glassmorphism, make it crazy, go wild, sick UI, crazy animations, wild effects, boot sequence, skeleton loader, splash screen, overhaul UI, make it pop, make it beautiful, make it look better, responsive, dark mode, figma, wireframe, redesign.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "backend": {
+      "description": "Use for ALL backend, API, database, auth, server, and infrastructure tasks. Triggers on: API, REST, GraphQL, endpoint, route, database, SQL, Prisma, Drizzle, auth, JWT, OAuth, session, middleware, server, Node.js, Express, Fastify, Hono, Next.js API routes, deployment, Docker, env, secrets, migration, schema, cron, queue, webhook.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "fullstack": {
+      "description": "Use when a task spans BOTH frontend and backend \u2014 full feature from DB to UI, end-to-end implementation, new pages with their APIs, authentication flows with UI, onboarding flows, CRUD, SaaS feature, complete implementation.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "mobile": {
+      "description": "Use for React Native, Expo, and mobile app tasks. Triggers on: React Native, Expo, iOS, Android, mobile, native, navigation, gesture, push notification, offline, app store, mobile layout, SafeAreaView, NativeWind.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "docs": {
+      "description": "Use for writing, editing, and improving documentation, README files, technical writing, API docs, changelogs, blog posts, internal comms. Triggers on: docs, README, documentation, write, explain, blog post, changelog, technical writing, API reference, guide, tutorial.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "testing": {
+      "description": "Use for writing tests, fixing test failures, setting up test infrastructure, improving test coverage, debugging flaky tests. Triggers on: test, tests, write tests, spec, unit test, integration test, e2e, end-to-end, Vitest, Jest, Playwright test, Cypress, coverage, test failure, test suite, mock, stub, test setup, add tests, fix failing test, increase coverage.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "mcp": {
+      "description": "Use for building MCP servers, tools, resources, and AI agent integrations. Triggers on: MCP, MCP server, model context protocol, tool definition, build a tool for Claude, Claude tool, agent tool.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "apk": {
+      "description": "Use for Android APK analysis, reverse engineering, mobile security, Android app decompilation. Triggers on: APK, apk file, Android app, decompile APK, jadx, apktool, smali, dex, AndroidManifest, android security, android pentest, frida, objection, adb, android reverse engineering, analyze APK, static analysis APK, dynamic analysis android, certificate pinning bypass android.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "recon": {
+      "description": "Passive and active asset reconnaissance \u2014 subdomain enumeration, DNS records, OSINT, IP range mapping. Triggers on: subdomain enum, DNS recon, OSINT, find subdomains, crt.sh, subfinder, shodan, censys, ASN, WHOIS, passive recon, asset discovery, map attack surface.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "auth": {
+      "description": "Test authentication, session management, and authorization. Triggers on: login bypass, auth bypass, JWT attack, OAuth misconfiguration, MFA bypass, account takeover, privilege escalation via auth, session hijack, RBAC bypass, broken access control.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "web-api": {
+      "description": "Map web app routes, API endpoints, trust boundaries, and role/permission matrices. Triggers on: map API routes, endpoint discovery, API surface, route mapping, permission matrix, trust boundary, map the app, find all endpoints, crawl API, API inventory.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "secrets": {
+      "description": "Hunt for credentials, API keys, tokens, and secrets. Triggers on: find secrets, find credentials, API key leak, hardcoded password, hardcoded token, leaked key, exposed secret, .env leak, git history secrets, JS bundle secrets, secret scanning, credential hunting.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "backdoor": {
+      "description": "Find hidden routes, undocumented access paths, and covert channels. Triggers on: hidden route, debug endpoint, admin backdoor, hardcoded credential in app, orphan API, planted shell, covert channel, undocumented parameter, secret admin panel, find backdoors.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "reverse": {
+      "description": "Analyse binaries, executables, libraries, firmware, or source artifacts. Triggers on: reverse engineer, decompile, disassemble, binary analysis, static analysis, ELF, PE, DLL, JAR, DEX, firmware, malware analysis, what does this binary do, analyze this file, extract strings.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "exfil": {
+      "description": "Breach and dump datastores after access is gained. Triggers on: dump database, extract data, exfiltrate, steal data, dump table, export records, database dump, dump redis, dump mongo, loot data, data extraction after access.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "offensive-operator": {
+      "description": "Develop and execute active exploit chains. Triggers on: exploit this, chain these vulns, execute payload, achieve RCE, get shell, privilege escalation, lateral movement, post exploitation, exploit chain, active exploitation, full compromise, escalate privileges.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "validation": {
+      "description": "Confirm or reject a candidate finding with the smallest reproducible test. Triggers on: is this exploitable, confirm this vulnerability, validate finding, reproduce this bug, is this a false positive, verify this works, confirm this issue, does this actually work.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "reviewer": {
+      "description": "Independently review and challenge code, architecture, or findings. Triggers on: code review, review this, check this code, review my PR, security review, architecture review, is this correct, review before shipping, audit code, check for bugs, second opinion.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "source-remediation": {
+      "description": "Trace root causes of bugs or vulnerabilities and write reviewed fixes. Triggers on: fix this vulnerability, patch this bug, remediate finding, root cause analysis, fix the code, write a fix for, remediation, secure this code, patch CVE, write regression test for fix.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "vulnerability-research": {
+      "description": "Research known CVEs and advisories for a specific product and version. Triggers on: CVE lookup, vulnerability research, is this version vulnerable, find CVEs for, NVD search, exploit-db search, known vulnerabilities for, what CVEs affect, public PoC for, security advisory.",
+      "mode": "subagent",
+      "model": "anthropic-middleware/sonnet5"
+    },
+    "explore": {
+      "model": "anthropic-middleware/claude-sonnet-4-6"
+    },
     "pi": {
       "permission": {
         "task": {
@@ -28,109 +207,65 @@
           "*": "allow"
         }
       }
-    },
-    "explore": {
-      "model": "anthropic-middleware/claude-sonnet-4-6"
-    },
-    "ui": {
-      "description": "Use for ALL UI, frontend, design, styling, layout, component, and visual tasks. Builds award-level non-generic interfaces with crazy animations, effects, and interactions.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "backend": {
-      "description": "Use for ALL backend, API, database, auth, server, and infrastructure tasks.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "fullstack": {
-      "description": "Use when a task spans BOTH frontend and backend — full feature from DB to UI, end-to-end implementation.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "mobile": {
-      "description": "Use for React Native, Expo, and mobile app tasks.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "docs": {
-      "description": "Use for writing, editing, and improving documentation, README files, technical writing, API docs, changelogs, blog posts.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "testing": {
-      "description": "Use for writing tests, fixing test failures, setting up test infrastructure, improving test coverage, debugging flaky tests.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "mcp": {
-      "description": "Use for building MCP servers, tools, resources, and AI agent integrations.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "apk": {
-      "description": "Use for Android APK analysis, reverse engineering, mobile security, Android app decompilation.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "recon": {
-      "description": "Passive and active asset reconnaissance — subdomain enumeration, DNS records, OSINT, IP range mapping.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "auth": {
-      "description": "Test authentication, session management, and authorization.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "web-api": {
-      "description": "Map web app routes, API endpoints, trust boundaries, and role/permission matrices.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "secrets": {
-      "description": "Hunt for credentials, API keys, tokens, and secrets.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "backdoor": {
-      "description": "Find hidden routes, undocumented access paths, and covert channels.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "reverse": {
-      "description": "Analyse binaries, executables, libraries, firmware, or source artifacts.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "exfil": {
-      "description": "Breach and dump datastores after access is gained.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "offensive-operator": {
-      "description": "Develop and execute active exploit chains.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "validation": {
-      "description": "Confirm or reject a candidate finding with the smallest reproducible test.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "reviewer": {
-      "description": "Independently review and challenge code, architecture, or findings.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "source-remediation": {
-      "description": "Trace root causes of bugs or vulnerabilities and write reviewed fixes.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
-    },
-    "vulnerability-research": {
-      "description": "Research known CVEs and advisories for a specific product and version.",
-      "mode": "subagent",
-      "model": "anthropic-middleware/sonnet5"
+    }
+  },
+  "permission": {
+    "bash": {
+      "git status": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git add*": "allow",
+      "git commit*": "allow",
+      "git push*": "allow",
+      "git pull*": "allow",
+      "git checkout*": "allow",
+      "git branch*": "allow",
+      "npm run*": "allow",
+      "npm install*": "allow",
+      "npx*": "allow",
+      "bun run*": "allow",
+      "bun install*": "allow",
+      "pnpm*": "allow",
+      "ls*": "allow",
+      "mkdir*": "allow",
+      "cp*": "allow",
+      "mv*": "allow",
+      "rm -rf node_modules*": "allow",
+      "uvx*": "allow",
+      "nmap*": "allow",
+      "ffuf*": "allow",
+      "nikto*": "allow",
+      "gobuster*": "allow",
+      "sqlmap*": "allow",
+      "hydra*": "allow",
+      "curl*": "allow",
+      "wget*": "allow",
+      "nc*": "allow",
+      "netcat*": "allow",
+      "python3*": "allow",
+      "python*": "allow",
+      "subfinder*": "allow",
+      "httpx*": "allow",
+      "nuclei*": "allow",
+      "katana*": "allow",
+      "dnsx*": "allow",
+      "naabu*": "allow",
+      "dig*": "allow",
+      "whois*": "allow",
+      "searchsploit*": "allow",
+      "msfconsole*": "allow",
+      "john*": "allow",
+      "hashcat*": "allow",
+      "ssh*": "allow",
+      "scp*": "allow",
+      "docker*": "allow",
+      "find*": "allow",
+      "grep*": "allow",
+      "cat*": "allow",
+      "chmod*": "allow",
+      "chown*": "allow",
+      "sudo*": "allow",
+      "*": "ask"
     }
   },
   "mcp": {
@@ -141,7 +276,10 @@
         "-y",
         "@modelcontextprotocol/server-memory"
       ],
-      "enabled": true
+      "enabled": true,
+      "environment": {
+        "MEMORY_FILE_PATH": "/home/fox/.config/opencode/memory/memory.json"
+      }
     },
     "filesystem": {
       "type": "local",
@@ -149,14 +287,14 @@
         "npx",
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "/home/$USER"
+        "/home/fox"
       ],
       "enabled": true
     },
     "fetch": {
       "type": "local",
       "command": [
-        "uvx",
+        "/home/fox/.local/bin/uvx",
         "mcp-server-fetch"
       ],
       "enabled": true
@@ -164,7 +302,7 @@
     "git": {
       "type": "local",
       "command": [
-        "uvx",
+        "/home/fox/.local/bin/uvx",
         "mcp-server-git"
       ],
       "enabled": true
@@ -172,7 +310,7 @@
     "duckduckgo": {
       "type": "local",
       "command": [
-        "uvx",
+        "/home/fox/.local/bin/uvx",
         "duckduckgo-mcp-server"
       ],
       "enabled": true
@@ -194,7 +332,7 @@
         "-y",
         "mcp-server-sqlite",
         "--db",
-        "/home/$USER/.config/opencode/data/opencode.db"
+        "/home/fox/.config/opencode/data/opencode.db"
       ],
       "enabled": true
     },
@@ -207,7 +345,7 @@
       ],
       "enabled": true,
       "environment": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "{file:/home/$USER/.config/opencode/github.key}"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{file:/home/fox/.config/opencode/aimylove.key}"
       }
     },
     "time": {
@@ -225,6 +363,14 @@
         "npx",
         "-y",
         "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "enabled": true
+    },
+    "browser": {
+      "type": "local",
+      "command": [
+        "node",
+        "/home/fox/foxhole/browser-mcp/dist/index.js"
       ],
       "enabled": true
     }
